@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a252b" />
+    <title>HawkHive 本机采集器</title>
+    <link rel="stylesheet" href="./collector.css?v=20260908-ip-change" />
+  </head>
+  <body>
+    <main id="collectorApp" class="shell">
+      <header class="app-header">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div><strong>HawkHive</strong><span>现场采集控制台</span></div>
+        </div>
+        <div class="header-actions">
+          <div class="language-switcher" role="group" aria-label="语言">
+            <button type="button" data-locale="zh-CN">中文</button><button type="button" data-locale="en-US">EN</button>
+          </div>
+          <span class="network-badge"><i></i>同一局域网 · Modbus TCP</span>
+          <span class="local-badge">仅限本机访问</span>
+          <a href="./index.html">客户工作台 <span aria-hidden="true">↗</span></a>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <header class="page-head">
+          <div>
+            <p class="eyebrow">现场网络控制台</p>
+            <h1>设备网络，一处管理</h1>
+            <p>发现同一网络内的设备，逐台确认真实读数，再稳定上传到远程平台。</p>
+          </div>
+          <button id="refreshBtn" class="button secondary" type="button"><span aria-hidden="true">↻</span> 刷新状态</button>
+        </header>
+
+        <section id="modeNotice" class="notice" role="alert" hidden></section>
+
+        <section id="readinessPanel" class="readiness-panel checking" aria-live="polite">
+          <div id="readinessIcon" class="readiness-icon" aria-hidden="true">…</div>
+          <div class="readiness-copy">
+            <p id="readinessEyebrow">正在检查</p>
+            <h2 id="readinessTitle">正在确认采集链路</h2>
+            <p id="readinessDetail">请稍候，正在核对设备、真实读数和云端连接。</p>
+          </div>
+          <button id="readinessAction" class="button primary" type="button">查看详情</button>
+        </section>
+
+        <section class="health-grid" aria-label="采集器状态">
+          <article class="health-card">
+            <span class="health-kicker">01 / 设备</span>
+            <div><strong id="deviceHealth">检查中…</strong><small id="deviceHealthDetail">--</small></div>
+          </article>
+          <article class="health-card">
+            <span class="health-kicker">02 / 采集</span>
+            <div><strong id="collectionHealth">检查中…</strong><small id="collectionHealthDetail">--</small></div>
+          </article>
+          <article class="health-card">
+            <span class="health-kicker">03 / 云端</span>
+            <div><strong id="cloudHealth">检查中…</strong><small id="cloudHealthDetail">--</small></div>
+          </article>
+          <article class="health-card">
+            <span class="health-kicker">04 / 队列</span>
+            <div><strong id="queueHealth">检查中…</strong><small id="queueHealthDetail">--</small></div>
+          </article>
+          <article class="health-card">
+            <span class="health-kicker">05 / 存储</span>
+            <div><strong id="storageHealth">检查中…</strong><small id="storageHealthDetail">--</small></div>
+          </article>
+        </section>
+
+        <section class="main-grid">
+          <article id="deviceSurface" class="surface devices-surface">
+            <header class="surface-head">
+              <div>
+                <p class="eyebrow">设备清单</p>
+                <h2>设备清单</h2>
+                <p>设备均位于同一网络。独立 Wi-Fi 设备通常使用不同 IP、相同 502 端口和 Slave ID 1。</p>
+              </div>
+              <div class="inventory-capacity">
+                <strong id="deviceCapacity">0 / 100</strong>
+                <span>已配置设备</span>
+                <i><b id="capacityBar"></b></i>
+              </div>
+            </header>
+
+            <section class="inventory-toolbar" aria-label="设备清单工具">
+              <label class="search-field">
+                <span class="sr-only">搜索设备</span>
+                <i aria-hidden="true">⌕</i>
+                <input id="deviceSearchInput" type="search" placeholder="搜索名称、IP 或洁净室" />
+              </label>
+              <div class="filter-tabs" role="group" aria-label="按状态筛选">
+                <button class="active" data-filter="all" type="button">全部 <b id="allCount">0</b></button>
+                <button data-filter="online" type="button">在线 <b id="onlineCount">0</b></button>
+                <button data-filter="offline" type="button">需处理 <b id="offlineCount">0</b></button>
+                <button data-filter="draft" type="button">待保存 <b id="draftCount">0</b></button>
+              </div>
+              <div class="toolbar-actions">
+                <button id="discoverBtn" class="button secondary" type="button"><span aria-hidden="true">◎</span> 扫描网络</button>
+                <button id="addDeviceBtn" class="button primary" type="button"><span aria-hidden="true">＋</span> 添加设备</button>
+              </div>
+            </section>
+
+            <section id="discoveryPanel" class="discovery-panel" hidden>
+              <header>
+                <div>
+                  <p class="eyebrow">网络发现</p>
+                  <h3>扫描同一局域网</h3>
+                  <p>默认自动识别本机所在的 /24 网段，并检查 Modbus TCP 端口。</p>
+                </div>
+                <button id="closeScanBtn" class="icon-button" type="button" aria-label="关闭扫描面板">×</button>
+              </header>
+              <div class="discovery-fields">
+                <label><span>本机网络接口</span><select id="networkSelect"><option value="">正在识别…</option></select></label>
+                <label><span>扫描网段</span><input id="cidrInput" placeholder="自动识别，或填写 192.168.2.0/24" /></label>
+                <label><span>TCP 端口</span><input id="scanPortInput" type="number" min="1" max="65535" value="502" /></label>
+                <label><span>加入洁净室</span><select id="scanRoomInput"></select></label>
+                <button id="startScanBtn" class="button dark" type="button">开始扫描</button>
+              </div>
+              <div class="discovery-note"><span aria-hidden="true">i</span><p>仅扫描已获授权的现场网络。请选择新增设备或更新原设备 IP，再保存清单；扫描不能确认仪表的唯一身份。</p></div>
+              <div id="scanResults" class="scan-results" aria-live="polite">
+                <div class="empty compact">尚未扫描。所有设备在同一网络时，通常只需使用自动识别。</div>
+              </div>
+              <footer id="scanFooter" class="scan-footer" hidden>
+                <span id="scanSelectionSummary">已选择 0 台设备</span>
+                <button id="addScannedBtn" class="button primary" type="button" disabled>应用所选地址</button>
+              </footer>
+            </section>
+
+            <div id="deviceList" class="device-list" aria-live="polite"></div>
+
+            <footer class="surface-foot">
+              <div>
+                <span id="savePulse" class="save-pulse"></span>
+                <span id="saveState">没有未保存的更改</span>
+              </div>
+              <div>
+                <button id="discardBtn" class="button ghost" type="button" disabled>放弃更改</button>
+                <button id="saveBtn" class="button primary" type="button" disabled>保存设备清单</button>
+              </div>
+            </footer>
+          </article>
+
+          <aside class="side-stack">
+            <article class="surface network-guide">
+              <p class="eyebrow">网络规则</p>
+              <h2>同一网络配置原则</h2>
+              <div class="rule-visual" aria-hidden="true">
+                <span>采集器</span><i></i><b>LAN</b><i></i><span>设备 × N</span>
+              </div>
+              <ol>
+                <li><b>每台独立设备使用不同 IP</b><span>例如 192.168.2.30、.31、.32</span></li>
+                <li><b>端口通常统一为 502</b><span>只有网关做了端口映射时才修改</span></li>
+                <li><b>独立 IP 可以全部使用 Slave ID 1</b><span>同一网关下的设备才需要不同 Slave ID</span></li>
+              </ol>
+            </article>
+
+            <article id="cloudCard" class="surface cloud-card">
+              <header class="cloud-card-head">
+                <div><p class="eyebrow">远程平台</p><h2 id="siteName">尚未配置站点</h2></div>
+                <span id="cloudConnectionBadge" class="connection-badge">未连接</span>
+              </header>
+              <p class="card-intro">设备在本机读取成功后，再连接远程平台。令牌只保存在这台采集器上。</p>
+              <details class="cloud-details">
+                <summary>配置云端连接 <span>展开</span></summary>
+                <div class="cloud-form">
+                  <label><span>云端地址</span><input id="cloudUrlInput" type="url" placeholder="https://dashboard.example.com" /></label>
+                  <label><span>站点编号</span><input id="siteIdInput" placeholder="customer-site-001" /></label>
+                  <label><span>边缘令牌</span><input id="edgeTokenInput" type="password" autocomplete="new-password" placeholder="粘贴一次性令牌" /><small id="tokenHelp">只保存在本机，不会再次显示。</small></label>
+                  <button id="connectCloudBtn" class="button primary" type="button">测试并连接</button>
+                  <p id="cloudFormMessage" class="cloud-form-message" aria-live="polite"></p>
+                </div>
+              </details>
+              <dl>
+                <div><dt>最近云端通信</dt><dd id="lastCloudContact">--</dd></div>
+                <div><dt>最近成功上传</dt><dd id="lastUpload">--</dd></div>
+                <div><dt>最近设备读数</dt><dd id="lastReading">--</dd></div>
+              </dl>
+              <p id="cloudHint" class="card-note">连接云端后，新记录会自动进入上传队列。</p>
+            </article>
+
+          </aside>
+
+          <article id="diagnosticCard" class="surface log-card">
+            <header><div><p class="eyebrow">诊断</p><h2>问题与活动</h2></div><button id="refreshLogsBtn" class="text-button" type="button">刷新</button></header>
+            <section id="currentBlocker" class="current-blocker" hidden>
+              <span>当前需处理</span><strong id="blockerTitle">--</strong><p id="blockerDetail">--</p><small id="blockerTime">--</small>
+            </section>
+            <div id="logList" class="log-list"></div>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="deviceDialog" class="device-dialog">
+      <form id="deviceForm" method="dialog">
+        <header>
+          <div><p id="deviceDialogEyebrow" class="eyebrow">新设备</p><h2 id="deviceDialogTitle">添加设备</h2><p>填写局域网连接参数。保存清单后，采集器会自动开始读取。</p></div>
+          <button id="closeDeviceDialogBtn" class="icon-button" type="button" aria-label="关闭设备编辑">×</button>
+        </header>
+        <input id="deviceKeyInput" type="hidden" />
+        <div class="dialog-fields">
+          <label class="span-two"><span>设备名称</span><input id="deviceNameInput" maxlength="100" placeholder="例如：灌装间粒子计数器 01" required /></label>
+          <label><span>所属洁净室</span><select id="deviceRoomInput" required></select></label>
+          <label><span>局域网 IP</span><input id="deviceHostInput" inputmode="decimal" placeholder="192.168.2.31" required /></label>
+          <label><span>TCP 端口</span><input id="devicePortInput" type="number" min="1" max="65535" value="502" required /></label>
+          <label><span>Slave ID</span><input id="deviceSlaveInput" type="number" min="1" max="247" value="1" required /></label>
+        </div>
+        <div class="connection-hint"><span aria-hidden="true">→</span><p><b id="connectionPreview">等待填写 IP</b><small>独立 Wi-Fi 设备通常只需修改 IP，端口保持 502、Slave ID 保持 1。</small></p></div>
+        <div id="dialogTestResult" class="test-result" aria-live="polite"></div>
+        <footer>
+          <button id="cancelDeviceDialogBtn" class="button ghost" type="button">取消</button>
+          <div>
+            <button id="dialogTestBtn" class="button secondary" type="button">测试连接</button>
+            <button id="dialogSaveBtn" class="button primary" type="submit">加入设备清单</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+
+    <div id="collectorToast" class="toast" role="status" aria-live="polite"></div>
+    <script src="./i18n.js?v=20260908-ip-change"></script>
+    <script src="./collector.js?v=20260908-ip-change"></script>
+  </body>
+</html>

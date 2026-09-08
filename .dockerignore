@@ -1,0 +1,13 @@
+.env
+collector_settings.json
+.git
+.gitignore
+__pycache__/
+.ruff_cache/
+backups/
+dist/
+*.pyc
+*.sqlite3*
+*.dump*
+test_*.py
+.DS_Store

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#071814" />
+    <title>HawkHive 全厂洁净态势大屏</title>
+    <link rel="stylesheet" href="./wallboard.css" />
+  </head>
+  <body data-scenario="dataGap">
+    <div class="ambient-grid" aria-hidden="true"></div>
+    <main class="wallboard" aria-label="HawkHive 全厂洁净环境态势大屏" data-i18n-aria-label="wallboardLabel">
+      <header class="masthead">
+        <div class="brand-lockup">
+          <div class="brand-mark" aria-hidden="true"><span>H</span><i></i><span>H</span></div>
+          <div>
+            <strong>HawkHive</strong>
+            <small data-i18n="brandTagline">洁净环境洞察</small>
+          </div>
+        </div>
+
+        <div class="title-lockup">
+          <p><span data-i18n="factoryName">华东一厂</span> <span>/</span> <span data-i18n="operationsCenter">洁净环境运营中心</span></p>
+          <h1 data-i18n="screenTitle">全厂洁净态势</h1>
+        </div>
+
+        <div class="header-meta">
+          <div class="language-switch" role="group" aria-label="语言" data-i18n-aria-label="language"><button type="button" data-locale="zh-CN" class="active" aria-pressed="true">中</button><button type="button" data-locale="en-US" aria-pressed="false">EN</button></div>
+          <div class="demo-stamp" id="sourceStamp"><span></span><b id="sourceStampText">正在连接数据</b></div>
+          <time id="headerClock" datetime="2026-09-03T09:41:26+08:00">09:41:26</time>
+          <p id="headerDate">2026年9月3日 星期四</p>
+        </div>
+      </header>
+
+      <section class="command-strip" aria-label="大屏状态与控制" data-i18n-aria-label="screenControls">
+        <div class="source-proof">
+          <span class="source-proof__icon" id="sourceProofIcon" aria-hidden="true">···</span>
+          <p><strong id="sourceProofTitle">正在连接数据服务</strong><small id="sourceProofDetail">读取当前账号下的车间、设备与监测数据</small></p>
+        </div>
+        <div class="scenario-switch api-status" aria-live="polite"><span data-i18n="apiStatus">接口状态</span><strong id="apiStatusText">连接中</strong><small id="apiLastSync">—</small></div>
+        <button id="fullscreenButton" class="fullscreen-button" type="button" aria-label="进入全屏显示" data-i18n-aria-label="enterFullscreen">
+          <span aria-hidden="true">⌗</span> <b data-i18n="fullscreen">全屏</b>
+        </button>
+      </section>
+
+      <section class="dashboard-grid">
+        <aside class="left-rail">
+          <article class="panel verdict-panel">
+            <div class="panel-label"><span>01</span> <b data-i18n="plantVerdict">全厂判定</b></div>
+            <div class="verdict-orbit" aria-hidden="true">
+            <div class="verdict-orbit__score"><strong id="healthScore">—</strong><small data-i18n="healthScore">监控覆盖率</small></div>
+            </div>
+            <div class="verdict-copy" aria-live="polite">
+              <p id="verdictKicker">正在读取监测数据</p>
+              <h2 id="verdictTitle">正在确认</h2>
+              <span id="verdictAction">结论将在数据校验后显示</span>
+            </div>
+            <div class="verdict-facts">
+              <div><strong id="onlineRoomCount">0</strong><span data-i18n="operatingRooms">运行区域</span></div>
+              <i></i>
+              <div><strong id="activeAlarmCount">0</strong><span data-i18n="activeAlarms">活动报警</span></div>
+              <i></i>
+              <div><strong id="pendingActionCount">0</strong><span data-i18n="pendingActions">待办事项</span></div>
+            </div>
+          </article>
+
+          <article class="panel environment-panel">
+            <div class="panel-label"><span>02</span> <b data-i18n="environmentOverview">环境概况</b></div>
+            <div class="environment-reading temperature">
+              <div class="reading-glyph" aria-hidden="true"><i></i></div>
+              <p><span data-i18n="averageTemperature">平均温度</span><strong id="averageTemperature">—</strong><em data-i18n="withinRange">适宜</em></p>
+              <div class="range-rail"><span style="--value: 54%"></span></div>
+            </div>
+            <div class="environment-reading humidity">
+              <div class="reading-glyph" aria-hidden="true"><i></i></div>
+              <p><span data-i18n="averageHumidity">平均湿度</span><strong id="averageHumidity">—</strong><em data-i18n="withinRange">适宜</em></p>
+              <div class="range-rail"><span style="--value: 61%"></span></div>
+            </div>
+            <div class="particle-snapshot">
+              <p><span data-i18n="keyChannel">关键通道</span><small data-i18n="particleChannel">≥ 0.5 µm 粒子</small></p>
+              <strong id="particleAverage">—</strong>
+              <small data-i18n="plantAverageUnit">全厂均值 · particles/ft³</small>
+            </div>
+          </article>
+
+          <article class="panel trust-panel">
+            <div class="panel-label"><span>03</span> <b data-i18n="dataTrust">数据可信度</b></div>
+            <div class="trust-score"><strong id="dataCompleteness">—</strong><span data-i18n="liveCompleteness">监控覆盖率</span></div>
+            <ul>
+              <li id="freshnessItem"><span></span><p><strong id="freshDeviceSummary">正在读取设备数据</strong><small><b data-i18n="latestUpdate">最近更新</b>：<time id="latestReadingTime">—</time></small></p></li>
+              <li id="collectorItem"><span></span><p><strong id="collectorSummary">正在确认采集链路</strong><small data-i18n="freshOnly">汇总值仅使用新鲜实时读数</small></p></li>
+            </ul>
+          </article>
+        </aside>
+
+        <section class="center-stage">
+          <article class="panel floor-panel">
+            <header class="panel-head">
+              <div>
+                <div class="panel-label"><span>04</span> <b data-i18n="areaSituation">区域态势</b></div>
+                <h2 data-i18n="locateIssues">一眼定位异常区域</h2>
+              </div>
+              <div class="map-head-tools"><div class="legend" aria-label="状态图例" data-i18n-aria-label="statusLegend"><span class="ok" data-i18n="normal">正常</span><span class="watch" data-i18n="watch">待观察</span><span class="alarm" data-i18n="alarm">报警</span><span class="offline" data-i18n="offline">离线</span></div><div class="room-pagination"><button id="previousRoomPage" type="button" aria-label="上一页车间" data-i18n-aria-label="previousRoomPage">‹</button><strong id="roomPageIndicator">1 / 2</strong><button id="nextRoomPage" type="button" aria-label="下一页车间" data-i18n-aria-label="nextRoomPage">›</button></div></div>
+            </header>
+
+            <div class="facility-stage">
+              <div class="scan-line" aria-hidden="true"></div>
+              <svg class="facility-lines" viewBox="0 0 1000 510" preserveAspectRatio="none" aria-hidden="true">
+                <path d="M58 46H942V450H58Z" />
+                <path d="M353 46V450M647 46V450M58 248H942" />
+                <path class="flow" d="M104 205H297L354 162H590L648 205H890" />
+              </svg>
+              <div id="roomZoneList"></div>
+              <div class="facility-caption"><span></span><b data-i18n="diagramDisclaimer">区域示意图 · 非真实厂区平面图</b></div>
+            </div>
+
+            <footer class="selected-room-summary">
+              <div><span data-i18n="selectedRoom">当前选中</span><strong id="selectedRoomName">—</strong></div>
+              <div><span data-i18n="deviceAvailability">设备可用</span><strong id="selectedRoomDevices">0 / 0</strong></div>
+              <div><span>≥ 0.5 µm</span><strong id="selectedRoomParticle">—</strong><small>particles/ft³</small></div>
+              <div><span data-i18n="temperature">温度</span><strong id="selectedRoomTemp">—</strong></div>
+              <div><span data-i18n="humidity">湿度</span><strong id="selectedRoomHumidity">—</strong></div>
+            </footer>
+            <section class="selected-device-section" aria-label="当前车间设备" data-i18n-aria-label="selectedRoomDevicesLabel"><header><span data-i18n="devicesInRoom">车间内设备</span><strong id="selectedDeviceCount">0 台</strong><small id="selectedRoomUpdated">—</small></header><div id="selectedDeviceList" class="selected-device-list"></div></section>
+          </article>
+
+          <article class="panel trend-panel">
+            <header class="panel-head">
+              <div>
+                <div class="panel-label"><span>05</span> <b data-i18n="trend24h">24 小时趋势</b></div>
+                <h2 data-i18n="particleChange">≥ 0.5 µm 粒子变化</h2>
+              </div>
+              <div class="trend-summary"><span data-i18n="plantPeak">全厂峰值</span><strong id="peakValue">—</strong><small>particles/ft³</small></div>
+            </header>
+            <div class="chart-shell" role="img" aria-label="当前账号全部区域过去24小时0.5微米粒子最高值趋势" data-i18n-aria-label="chartDescription">
+              <div class="y-axis"><span>100k</span><span>75k</span><span>50k</span><span>25k</span><span>0</span></div>
+              <svg viewBox="0 0 1000 245" preserveAspectRatio="none" aria-hidden="true">
+                <defs>
+                  <linearGradient id="trendArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#a8f15b" stop-opacity=".26" /><stop offset="100%" stop-color="#a8f15b" stop-opacity="0" /></linearGradient>
+                </defs>
+                <path class="chart-grid" d="M0 6H1000M0 64H1000M0 122H1000M0 180H1000M0 238H1000" />
+                <path id="thresholdPath" class="threshold-line" d="M0 70H1000" />
+                <path id="trendAreaPath" class="area-path" d="" />
+                <path id="trendMainPath" class="main-path" d="" />
+                <g id="peakDot" class="peak-dot" hidden><circle cx="0" cy="0" r="7" /><circle cx="0" cy="0" r="15" /></g>
+              </svg>
+              <div id="thresholdLabel" class="threshold-label"><span data-i18n="alarmLimit">报警上限</span> —</div>
+              <div id="trendEmpty" class="chart-empty" hidden data-i18n="noTrend">暂无趋势数据</div>
+              <div class="x-axis"><span>00:00</span><span>04:00</span><span>08:00</span><span>12:00</span><span>16:00</span><span>20:00</span><span data-i18n="now">现在</span></div>
+            </div>
+          </article>
+        </section>
+
+        <aside class="right-rail">
+          <article class="panel action-panel">
+            <header class="panel-head">
+              <div>
+                <div class="panel-label"><span>06</span> <b data-i18n="needsAttention">需要关注</b></div>
+                <h2 id="actionTitle">正在确认</h2>
+              </div>
+              <span id="actionSeverity" class="severity watch" hidden></span>
+            </header>
+            <div id="actionList" class="action-list"></div>
+            <div id="emptyAction" class="empty-action" hidden>
+              <span aria-hidden="true">✓</span>
+              <strong data-i18n="noActionNeeded">当前无需处理</strong>
+              <p data-i18n="allNormalFresh">全部区域数据正常且新鲜</p>
+            </div>
+          </article>
+
+          <article class="panel room-list-panel">
+            <header class="panel-head">
+              <div>
+                <div class="panel-label"><span>07</span> <b data-i18n="areaOperation">区域运行</b></div>
+                <h2 id="roomCountTitle">0 个区域</h2>
+              </div>
+              <span id="roomAvailabilityChip" class="quiet-chip">正在确认</span>
+            </header>
+            <ol id="roomList" class="room-list"></ol>
+            <p class="list-unit" data-i18n="roomListUnit">按状态与 ≥ 0.5 µm 最高读数排序 · particles/ft³</p>
+          </article>
+
+          <article class="panel shift-panel">
+            <div class="panel-label"><span>08</span> <b data-i18n="todayOperation">今日运行</b></div>
+            <div class="shift-grid">
+              <p><span data-i18n="stableRuntime">数据服务已连接</span><strong id="connectedRuntime">00:00:00</strong><small data-i18n="hours">时长</small></p>
+              <p><span data-i18n="shiftAlarms">本班次报警</span><strong id="shiftAlarmCount">0</strong><small data-i18n="times">次</small></p>
+              <p><span data-i18n="resolvedIssues">已恢复事项</span><strong id="resolvedAlarmCount">0</strong><small data-i18n="items">项</small></p>
+            </div>
+          </article>
+        </aside>
+      </section>
+
+      <footer class="status-ribbon">
+        <div class="live-signal"><span></span><strong data-i18n="screenNumber">屏幕 01</strong> <b data-i18n="plantOverview">全厂总览</b></div>
+        <div class="ticker"><span data-i18n="refreshRate">数据刷新频率</span><strong data-i18n="tenSeconds">10 秒</strong><i></i><span data-i18n="alarmRule">报警判定</span><strong id="alarmDelayRule">—</strong><i></i><span data-i18n="currentVersion">当前版本</span><strong data-i18n="productionVersion">数据接入 V1</strong></div>
+        <div class="rotation"><span id="rotationDot"></span><strong id="rotationLabel">区域自动轮播</strong><button id="rotationButton" type="button">暂停</button></div>
+      </footer>
+    </main>
+    <section id="blockingState" class="blocking-state" aria-live="assertive"><div><div class="blocking-language language-switch" role="group" aria-label="语言" data-i18n-aria-label="language"><button type="button" data-locale="zh-CN">中</button><button type="button" data-locale="en-US">EN</button></div><span id="blockingIcon">···</span><h2 id="blockingTitle" data-i18n="loadingTitle">正在加载大屏</h2><p id="blockingDetail" data-i18n="loadingDetail">正在校验登录状态并读取监测数据。</p><a id="blockingAction" href="./index.html" hidden>返回登录</a><button id="retryButton" type="button" hidden>重试</button></div></section>
+    <script src="./wallboard.js?v=20260907-device-lifecycle"></script>
+  </body>
+</html>

@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b252d" />
+    <title>HawkHive 洁净环境监测</title>
+    <link rel="stylesheet" href="./styles.css?v=20260908-ip-change" />
+  </head>
+  <body class="auth-pending">
+    <section id="loginView" class="login-shell" aria-labelledby="loginTitle">
+      <div class="login-visual" aria-hidden="true">
+        <div class="login-brand-lockup">
+          <div class="mark">HH</div>
+          <div><strong>HawkHive</strong><span>洁净环境监测平台</span></div>
+        </div>
+        <div class="login-copy">
+          <p class="eyebrow">洁净环境洞察</p>
+          <h2>让每一次读数<br />都有依据。</h2>
+          <p>持续查看颗粒物、温湿度和报警记录，快速确认设备是否在线、数据是否新鲜。</p>
+        </div>
+        <div class="login-proof-card">
+          <span class="proof-icon">✓</span>
+          <div><strong>数据可追溯</strong><small>实时读数、历史记录与报警事件分开保存</small></div>
+        </div>
+      </div>
+      <form id="loginForm" class="panel login-card">
+        <div class="language-switcher login-language" role="group" aria-label="语言">
+          <button type="button" data-locale="zh-CN">中文</button><button type="button" data-locale="en-US">EN</button>
+        </div>
+        <div class="login-card-brand"><div class="mark">HH</div><strong>HawkHive</strong></div>
+        <p class="eyebrow">客户工作台</p>
+        <h1 id="loginTitle">欢迎回来</h1>
+        <p class="message">登录后查看洁净室实时状态、趋势与报警记录。</p>
+        <label><span>账号</span><input id="usernameInput" autocomplete="username" required /></label>
+        <label><span>密码</span><input id="passwordInput" type="password" autocomplete="current-password" required /></label>
+        <p id="loginError" class="login-error" role="alert"></p>
+        <button id="loginBtn" class="primary" type="submit">登录</button>
+        <p class="login-help">无法登录时，请联系本系统管理员重置密码。</p>
+      </form>
+    </section>
+
+    <main id="dashboardApp" class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="mark">HH</div>
+          <div><h1>HawkHive</h1><p>洁净环境监测</p></div>
+        </div>
+        <div class="language-switcher sidebar-language" role="group" aria-label="语言">
+          <button type="button" data-locale="zh-CN">中文</button><button type="button" data-locale="en-US">EN</button>
+        </div>
+        <nav class="nav" aria-label="工作台导航">
+          <button class="nav-button active" data-view="realtime" type="button" aria-current="page"><span class="nav-icon" aria-hidden="true">◎</span><span>实时</span></button>
+          <button class="nav-button" data-view="history" type="button"><span class="nav-icon" aria-hidden="true">↗</span><span>历史</span></button>
+          <button class="nav-button" data-view="alarms" type="button"><span class="nav-icon" aria-hidden="true">!</span><span>报警</span><b id="navAlarmCount" class="nav-count" hidden>0</b></button>
+          <button id="topologyNav" class="nav-button" data-view="topology" type="button" hidden><span class="nav-icon" aria-hidden="true">▦</span><span>场所设备</span></button>
+          <button id="settingsNav" class="nav-button" data-view="settings" type="button"><span class="nav-icon" aria-hidden="true">◇</span><span>设置</span></button>
+          <a class="nav-button wallboard-nav" href="./wallboard.html" target="_blank" rel="noopener"><span class="nav-icon" aria-hidden="true">▤</span><span>大屏</span></a>
+        </nav>
+        <section class="sidebar-status" aria-labelledby="sidebarStatusTitle">
+          <p id="sidebarStatusTitle" class="sidebar-label">当前状态</p>
+          <div id="statusBadge" class="status idle" role="status" aria-live="polite">正在连接</div>
+          <p id="lastMessage" class="message">正在获取监测数据。</p>
+          <p id="lastUpdate" class="timestamp">--</p>
+        </section>
+        <section class="account-panel">
+          <span>当前账号</span><strong id="currentUser" data-i18n-ignore>--</strong><button id="logoutBtn" type="button">退出</button>
+        </section>
+      </aside>
+
+      <section class="content">
+        <section id="scopeBar" class="scope-bar panel" aria-label="监控范围">
+          <div class="scope-copy"><span>监控范围</span><strong id="scopeTitle">请选择洁净室</strong></div>
+          <label><span>洁净室</span><select id="cleanroomInput"></select></label>
+          <label><span>设备</span><select id="deviceInput"></select></label>
+          <div class="scope-freshness"><span id="scopeDot" class="state-dot"></span><div><small>最新数据</small><strong id="scopeFreshness">等待中</strong></div></div>
+        </section>
+
+        <section id="realtimeView" class="view active">
+          <div id="deviceMaintenanceNotice" class="maintenance-notice" role="status" hidden></div>
+          <header class="topbar">
+            <div><p class="eyebrow">实时监控</p><h2>现在是否需要处理？</h2><p class="page-subtitle">先看连接、数据新鲜度和报警，再查看具体读数。</p></div>
+            <div id="overallState" class="overall-state waiting"><span class="overall-dot"></span><div><small>综合状态</small><strong id="overallStateLabel">正在确认</strong></div></div>
+          </header>
+          <section class="health-strip" aria-label="链路与数据状态">
+            <article class="health-item"><span>设备连接</span><strong id="deviceConnectionState">确认中</strong><small id="deviceConnectionDetail">--</small></article>
+            <article class="health-item"><span>数据新鲜度</span><strong id="readingFreshness">等待中</strong><small id="readingFreshnessDetail">--</small></article>
+            <article class="health-item"><span>数据来源</span><strong id="readingSource">--</strong><small id="readingSourceDetail">必须来自真实设备</small></article>
+            <article class="health-item"><span>活动报警</span><strong id="activeAlarmCount">0 项</strong><small id="activeAlarmDetail">当前无活动报警</small></article>
+          </section>
+          <section id="alarmBanner" class="alarm-banner" role="alert" hidden>
+            <div class="alarm-banner-icon" aria-hidden="true">!</div><div><p id="alarmBannerKicker">需要处理</p><h3 id="alarmBannerTitle">发现活动报警</h3><p id="alarmBannerDetail">--</p></div><button id="openAlarmBtn" type="button">查看报警详情</button>
+          </section>
+          <section class="environment-grid" aria-label="温湿度">
+            <article id="temperatureCard" class="environment-card temperature-card"><div><span>温度</span><small id="temperatureRange">正常范围 --</small></div><strong id="temperatureValue">--</strong><footer><span id="temperatureState" class="metric-state">等待数据</span><small id="temperatureDelta">--</small></footer></article>
+            <article id="humidityCard" class="environment-card humidity-card"><div><span>湿度</span><small id="humidityRange">正常范围 --</small></div><strong id="humidityValue">--</strong><footer><span id="humidityState" class="metric-state">等待数据</span><small id="humidityDelta">--</small></footer></article>
+          </section>
+          <section class="section-heading"><div><p class="eyebrow">颗粒通道</p><h3>当前累计粒子数</h3></div><p>单位：<span id="particleUnitText">等待设备确认</span>；报警状态按各通道的独立策略判断。</p></section>
+          <section class="particle-grid" aria-label="颗粒物通道">
+            <article class="metric" data-channel="0.3"><span>≥ 0.3 µm</span><strong id="pm_0_3_um">--</strong><small id="pm_0_3_state">等待策略</small></article>
+            <article class="metric" data-channel="0.5"><span>≥ 0.5 µm</span><strong id="pm_0_5_um">--</strong><small id="pm_0_5_state">报警阈值 --</small></article>
+            <article class="metric" data-channel="1.0"><span>≥ 1.0 µm</span><strong id="pm_1_0_um">--</strong><small id="pm_1_0_state">等待策略</small></article>
+            <article class="metric" data-channel="2.5"><span>≥ 2.5 µm</span><strong id="pm_2_5_um">--</strong><small id="pm_2_5_state">等待策略</small></article>
+            <article class="metric" data-channel="5.0"><span>≥ 5.0 µm</span><strong id="pm_5_0_um">--</strong><small id="pm_5_0_state">等待策略</small></article>
+            <article class="metric" data-channel="10.0"><span>≥ 10.0 µm</span><strong id="pm_10_0_um">--</strong><small id="pm_10_0_state">等待策略</small></article>
+          </section>
+          <section class="main-grid realtime-grid">
+            <article class="panel chart-panel multi-chart-panel">
+              <div class="panel-header chart-workbench-head">
+                <div><p class="eyebrow">多设备对比</p><h3 id="roomTrendTitle">车间设备趋势</h3></div>
+                <div class="chart-head-controls">
+                  <label class="compact-field"><span>比较范围</span><select id="realtimeScopeInput"><option value="room">当前车间</option><option value="all">全部车间</option></select></label>
+                  <label class="compact-field"><span>粒径通道</span><select id="chartChannel" aria-describedby="trendSummary"><option value="pm_0_3_um">0.3 µm</option><option value="pm_0_5_um" selected>0.5 µm</option><option value="pm_1_0_um">1.0 µm</option><option value="pm_2_5_um">2.5 µm</option><option value="pm_5_0_um">5.0 µm</option><option value="pm_10_0_um">10.0 µm</option></select></label>
+                </div>
+              </div>
+              <section class="series-selector" aria-label="实时图表设备选择">
+                <div class="series-selector-head"><div><strong id="realtimeDeviceCount">0 台设备</strong><span>颜色固定对应设备，可单独隐藏</span></div><div><button id="realtimeSelectAll" type="button">全选</button><button id="realtimeClearAll" type="button">清空</button></div></div>
+                <div id="realtimeDeviceLegend" class="series-legend"></div>
+              </section>
+              <section class="comparison-chart-grid">
+                <article class="chart-block particle-chart-block">
+                  <header><div><span>颗粒物</span><h4 id="particleTrendTitle">0.5 µm 粒子趋势</h4></div><small id="realtimeParticleUnit">单位待确认</small></header>
+                  <canvas id="trendCanvas" width="900" height="320" role="img" aria-label="多设备颗粒实时趋势" aria-describedby="trendSummary"></canvas><p id="trendSummary" class="chart-summary">等待趋势数据。</p>
+                </article>
+                <article class="chart-block">
+                  <header><div><span>环境</span><h4>温度趋势</h4></div><small>°C</small></header>
+                  <canvas id="temperatureTrendCanvas" width="440" height="260" role="img" aria-label="多设备温度实时趋势" aria-describedby="temperatureTrendSummary"></canvas><p id="temperatureTrendSummary" class="chart-summary">等待趋势数据。</p>
+                </article>
+                <article class="chart-block">
+                  <header><div><span>环境</span><h4>湿度趋势</h4></div><small>%RH</small></header>
+                  <canvas id="humidityTrendCanvas" width="440" height="260" role="img" aria-label="多设备湿度实时趋势" aria-describedby="humidityTrendSummary"></canvas><p id="humidityTrendSummary" class="chart-summary">等待趋势数据。</p>
+                </article>
+              </section>
+            </article>
+            <article class="panel device-panel"><div class="panel-header"><div><p class="eyebrow">设备</p><h3>洁净室内设备</h3></div><span id="roomOnlineSummary" class="quiet-badge">--</span></div><div id="roomDeviceList" class="current-device-list"></div></article>
+          </section>
+        </section>
+
+        <section id="historyView" class="view">
+          <header class="topbar"><div><p class="eyebrow">历史与报表</p><h2>回看变化，而不是翻找数据</h2><p class="page-subtitle">按时间范围查看趋势、异常记录和完整粒径数据。</p></div><a id="exportExcelLink" class="button-link secondary-action" href="/api/history/export-xlsx">导出当前范围</a></header>
+          <section class="panel history-filter-card"><div class="range-presets" aria-label="快捷时间范围"><button type="button" data-range-hours="1">最近 1 小时</button><button type="button" data-range-hours="24" class="active">最近 24 小时</button><button type="button" data-range-hours="168">最近 7 天</button></div><div class="history-fields"><label><span>车间范围</span><select id="historyScopeInput"><option value="room">当前车间</option><option value="all">全部车间</option></select></label><label><span>开始时间</span><input id="historyStart" type="datetime-local" /></label><label><span>结束时间</span><input id="historyEnd" type="datetime-local" /></label><button id="refreshHistoryBtn" class="primary" type="button">查询</button></div></section>
+          <section class="panel series-selector history-series-selector" aria-label="历史图表设备选择"><div class="series-selector-head"><div><strong id="historySelectedDeviceCount">0 台设备</strong><span>表格、图表与导出保持同一选择范围</span></div><div><button id="historySelectAll" type="button">全选</button><button id="historyClearAll" type="button">清空</button></div></div><p id="historyRegistrationNotice" class="muted" hidden></p><div id="historyDeviceLegend" class="series-legend"></div></section>
+          <section class="history-summary" aria-label="历史数据摘要"><article><span>记录数</span><strong id="historyRecordCount">--</strong></article><article><span>设备数</span><strong id="historyDeviceCount">--</strong></article><article><span>含报警记录</span><strong id="historyAlarmCount">--</strong></article><article><span>当前范围</span><strong id="historyRangeText">最近 24 小时</strong></article></section>
+          <article class="panel chart-panel multi-chart-panel history-chart-panel">
+            <div class="panel-header chart-workbench-head"><div><p class="eyebrow">多设备历史对比</p><h3>历史变化</h3></div><label class="compact-field"><span>粒径通道</span><select id="historyChannel" aria-describedby="historyTrendSummary"><option value="pm_0_3_um">0.3 µm</option><option value="pm_0_5_um" selected>0.5 µm</option><option value="pm_1_0_um">1.0 µm</option><option value="pm_2_5_um">2.5 µm</option><option value="pm_5_0_um">5.0 µm</option><option value="pm_10_0_um">10.0 µm</option></select></label></div>
+            <section class="comparison-chart-grid">
+              <article class="chart-block particle-chart-block"><header><div><span>颗粒物</span><h4 id="historyParticleTrendTitle">0.5 µm 粒子趋势</h4></div><small id="historyParticleUnit">单位待确认</small></header><canvas id="historyCanvas" width="900" height="300" role="img" aria-label="多设备颗粒历史趋势" aria-describedby="historyTrendSummary"></canvas><p id="historyTrendSummary" class="chart-summary">等待历史数据。</p></article>
+              <article class="chart-block"><header><div><span>环境</span><h4>温度趋势</h4></div><small>°C</small></header><canvas id="historyTemperatureCanvas" width="440" height="260" role="img" aria-label="多设备温度历史趋势" aria-describedby="historyTemperatureSummary"></canvas><p id="historyTemperatureSummary" class="chart-summary">等待历史数据。</p></article>
+              <article class="chart-block"><header><div><span>环境</span><h4>湿度趋势</h4></div><small>%RH</small></header><canvas id="historyHumidityCanvas" width="440" height="260" role="img" aria-label="多设备湿度历史趋势" aria-describedby="historyHumiditySummary"></canvas><p id="historyHumiditySummary" class="chart-summary">等待历史数据。</p></article>
+            </section>
+          </article>
+          <article class="panel table-panel"><div class="panel-header"><div><p class="eyebrow">明细</p><h3>监测记录</h3></div><span id="historyTableUnit" class="quiet-badge">颗粒单位待确认</span></div><div class="table-wrap"><table><thead><tr><th scope="col">时间</th><th scope="col">车间</th><th scope="col">设备</th><th scope="col">0.3 µm</th><th scope="col">0.5 µm</th><th scope="col">1.0 µm</th><th scope="col">2.5 µm</th><th scope="col">5.0 µm</th><th scope="col">10.0 µm</th><th scope="col">温度 °C</th><th scope="col">湿度 %RH</th><th scope="col">状态</th></tr></thead><tbody id="historyTable"></tbody></table></div><footer class="pagination"><button id="historyPrevBtn" type="button">上一页</button><span id="historyPageLabel">第 1 页</span><button id="historyNextBtn" type="button">下一页</button></footer></article>
+        </section>
+
+        <section id="alarmsView" class="view">
+          <header class="topbar"><div><p class="eyebrow">报警中心</p><h2>先处理正在发生的异常</h2><p class="page-subtitle">活动报警、待确认趋势和已恢复事件分开展示。</p></div><button id="refreshAlarmsBtn" class="secondary-action" type="button">刷新报警</button></header>
+          <section class="alarm-summary" aria-label="报警摘要"><article class="active"><span>活动中</span><strong id="alarmActiveCount">0</strong></article><article class="pending"><span>待观察</span><strong id="alarmPendingCount">0</strong></article><article class="cleared"><span>已恢复</span><strong id="alarmClearedCount">0</strong></article></section>
+          <section class="alarm-filter-tabs" aria-label="报警筛选"><button type="button" data-alarm-filter="active" class="active">活动中</button><button type="button" data-alarm-filter="pending">待观察</button><button type="button" data-alarm-filter="cleared">已恢复</button><button type="button" data-alarm-filter="all">全部</button></section>
+          <section id="alarmList" class="alarm-list" aria-live="polite"></section><p class="workflow-note">当前版本提供只读报警追踪。若后续需要处置闭环，可再增加确认人、处理备注与恢复原因。</p>
+        </section>
+
+        <section id="topologyView" class="view topology-view">
+          <div id="lifecycleToolbar" class="lifecycle-toolbar" hidden><button id="openArchivedDevices" type="button">已删除设备</button><button id="openDeviceAudit" type="button">操作记录</button></div>
+          <header class="topbar">
+            <div><p class="eyebrow">场所与设备</p><h2>先建车间，再接入设备</h2><p class="page-subtitle">企业管理员维护业务归属；现场采集器负责连接验证与真实数据采集。</p></div>
+            <div class="topbar-actions"><button id="addCollectorBtn" class="secondary-action" type="button" hidden>下载通用 Windows 采集器</button><button id="addCleanroomBtn" class="primary" type="button">＋ 新建车间</button></div>
+          </header>
+
+          <section class="panel onboarding-strip" aria-label="设备接入流程">
+            <article><span>01</span><div><strong>安装采集器</strong><small>同一安装包可用于本客户多台电脑</small></div></article>
+            <i aria-hidden="true">→</i>
+            <article><span>02</span><div><strong>决定是否加入</strong><small>识别电脑并修改采集器名称</small></div></article>
+            <i aria-hidden="true">→</i>
+            <article><span>03</span><div><strong>发现并分配设备</strong><small>协议验证后选择车间和设备名称</small></div></article>
+          </section>
+
+          <section id="pendingCollectorInbox" class="panel discovered-inbox" hidden>
+            <header><div><p class="eyebrow">自动报到</p><h3>待加入的 Windows 电脑</h3><p>采集器启动后会自动出现在这里。确认是本客户的电脑后，可修改名称并决定加入或拒绝。</p></div><strong id="pendingCollectorCount">0</strong></header>
+            <div id="pendingCollectorList" class="discovered-device-list" aria-live="polite"></div>
+          </section>
+
+          <section id="discoveredInbox" class="panel discovered-inbox" hidden>
+            <header><div><p class="eyebrow">自动发现</p><h3>待分配设备</h3><p>采集器已经验证连接参数；请选择实际车间并修改设备名称。</p></div><strong id="discoveredDeviceCount">0</strong></header>
+            <div id="discoveredDeviceList" class="discovered-device-list" aria-live="polite"></div>
+          </section>
+
+          <section class="panel collector-overview" aria-labelledby="collectorOverviewTitle">
+            <header><div><p class="eyebrow">采集器节点</p><h3 id="collectorOverviewTitle">采集器节点</h3><p id="collectorScopeNotice">正在确认管理范围。</p></div><div class="collector-overview-count"><strong id="collectorOnlineCount">0 / 0</strong><span>节点在线</span></div></header>
+            <div id="collectorNodeList" class="collector-node-list" aria-live="polite"></div>
+          </section>
+
+          <section class="topology-summary" aria-label="场所设备摘要">
+            <article><span>车间</span><strong id="topologyRoomCount">0</strong><small id="topologyRoomCapacity">最多 200 个</small></article>
+            <article><span>已登记设备</span><strong id="topologyDeviceCount">0</strong><small id="topologyDeviceCapacity">最多 100 台</small></article>
+            <article><span>在线设备</span><strong id="topologyOnlineCount">0</strong><small>收到新鲜真实读数</small></article>
+            <article><span>离线设备</span><strong id="topologyOfflineCount">0</strong><small>曾有数据，当前已中断</small></article>
+            <article><span>待确认</span><strong id="topologyPendingCount">0</strong><small>尚未收到首条真实读数</small></article>
+          </section>
+
+          <section class="topology-layout">
+            <div id="topologyRoomList" class="topology-room-list" aria-live="polite"></div>
+            <aside class="topology-side">
+              <article class="panel access-card recommended">
+                <p class="eyebrow">推荐方式</p><h3>通用 Windows 采集器</h3>
+                <p>同一客户安装包可复制到多台电脑。每台电脑自动报到，管理员只需决定是否加入并按需修改名称。</p>
+                <ol><li>下载一次并复制到本客户现场电脑</li><li>每台电脑解压后双击安装</li><li>云端确认电脑，再为发现的设备选择车间</li></ol>
+                <a id="openCollectorLink" class="button-link" href="./collector.html" hidden>打开本机采集器</a>
+              </article>
+              <article class="panel access-card">
+                <p class="eyebrow">备用方式</p><h3>管理员手动登记</h3>
+                <p>适合已知固定 IP 的单台设备。保存后配置会下发给所选现场采集器，但不会立即标记为在线。</p>
+                <button id="manualAddDeviceBtn" class="secondary-action" type="button">手动添加设备</button>
+              </article>
+              <article class="topology-boundary-note"><strong>为什么保存后仍是“待确认”？</strong><p>云端无法直接访问车间内网。只有现场采集器成功读取设备并上传首条真实数据，平台才能证明设备连接正常。</p></article>
+            </aside>
+          </section>
+        </section>
+
+        <section id="settingsView" class="view settings-view">
+          <header class="topbar"><div><p class="eyebrow">客户设置</p><h2>只展示您有权修改的内容</h2><p class="page-subtitle">连接地址、端口、从站编号和云端令牌由现场采集器维护。</p></div><div class="settings-sync-mark"><span id="settingsSyncDot" class="sync-pulse"></span><div><small>配置状态</small><strong id="settingsSyncLabel">已保存</strong></div></div></header>
+          <section class="settings-layout"><div class="settings-main">
+            <article class="panel settings-card"><header><span class="section-symbol">01</span><div><p class="eyebrow">基本信息</p><h3>洁净室与设备名称</h3><p>名称会显示在实时页、历史报表和报警记录中。</p></div></header><div class="settings-fields"><label><span>洁净室</span><select id="manageRoomInput"></select></label><label><span>洁净室显示名称</span><input id="roomNameInput" maxlength="100" required /></label></div><div id="deviceEditorList" class="device-name-list"></div><p class="settings-boundary-note">设备连接参数不会在客户工作台中显示或修改；请在安装电脑上的本机采集器中维护。</p></article>
+            <article class="panel settings-card alarm-policy-card">
+              <header><span class="section-symbol alarm">02</span><div><p class="eyebrow">报警策略</p><h3>各通道独立设定</h3><p>启用后，读数持续高于上限 5 分钟触发报警；关闭规则会停止该通道的报警判断。</p></div></header>
+              <label class="profile-field"><span>规则名称</span><input id="profileNameInput" maxlength="100" /></label>
+              <section class="particle-policy" aria-labelledby="particlePolicyTitle">
+                <div class="particle-policy-heading"><div><strong id="particlePolicyTitle">粒子数上限</strong><small>可按现场标准启用需要的粒径，单位均为 particles/ft³</small></div><span>6 个独立通道</span></div>
+                <div class="particle-rule-list">
+                  <section class="particle-rule-row" data-particle-rule="0.3">
+                    <div class="particle-rule-identity"><strong>≥ 0.3 µm</strong><small>粒子数</small></div>
+                    <label class="rule-switch"><input id="particle03EnabledInput" type="checkbox" aria-label="启用 0.3 µm 粒子报警" /><span class="switch-track" aria-hidden="true"></span><span class="switch-copy"><strong>报警</strong><small>当前关闭</small></span></label>
+                    <label class="particle-limit-field"><span>高于此值报警</span><input id="particle03MaxInput" type="number" min="0" step="1" inputmode="numeric" placeholder="请输入上限" aria-label="0.3 µm 粒子报警上限" /></label>
+                  </section>
+                  <section class="particle-rule-row" data-particle-rule="0.5">
+                    <div class="particle-rule-identity"><strong>≥ 0.5 µm</strong><small>粒子数</small></div>
+                    <label class="rule-switch"><input id="particle05EnabledInput" type="checkbox" aria-label="启用 0.5 µm 粒子报警" /><span class="switch-track" aria-hidden="true"></span><span class="switch-copy"><strong>报警</strong><small>当前关闭</small></span></label>
+                    <label class="particle-limit-field"><span>高于此值报警</span><input id="particle05MaxInput" type="number" min="0" step="1" inputmode="numeric" placeholder="请输入上限" aria-label="0.5 µm 粒子报警上限" /></label>
+                  </section>
+                  <section class="particle-rule-row" data-particle-rule="1.0">
+                    <div class="particle-rule-identity"><strong>≥ 1.0 µm</strong><small>粒子数</small></div>
+                    <label class="rule-switch"><input id="particle10EnabledInput" type="checkbox" aria-label="启用 1.0 µm 粒子报警" /><span class="switch-track" aria-hidden="true"></span><span class="switch-copy"><strong>报警</strong><small>当前关闭</small></span></label>
+                    <label class="particle-limit-field"><span>高于此值报警</span><input id="particle10MaxInput" type="number" min="0" step="1" inputmode="numeric" placeholder="请输入上限" aria-label="1.0 µm 粒子报警上限" /></label>
+                  </section>
+                  <section class="particle-rule-row" data-particle-rule="2.5">
+                    <div class="particle-rule-identity"><strong>≥ 2.5 µm</strong><small>粒子数</small></div>
+                    <label class="rule-switch"><input id="particle25EnabledInput" type="checkbox" aria-label="启用 2.5 µm 粒子报警" /><span class="switch-track" aria-hidden="true"></span><span class="switch-copy"><strong>报警</strong><small>当前关闭</small></span></label>
+                    <label class="particle-limit-field"><span>高于此值报警</span><input id="particle25MaxInput" type="number" min="0" step="1" inputmode="numeric" placeholder="请输入上限" aria-label="2.5 µm 粒子报警上限" /></label>
+                  </section>
+                  <section class="particle-rule-row" data-particle-rule="5.0">
+                    <div class="particle-rule-identity"><strong>≥ 5.0 µm</strong><small>粒子数</small></div>
+                    <label class="rule-switch"><input id="particle50EnabledInput" type="checkbox" aria-label="启用 5.0 µm 粒子报警" /><span class="switch-track" aria-hidden="true"></span><span class="switch-copy"><strong>报警</strong><small>当前关闭</small></span></label>
+                    <label class="particle-limit-field"><span>高于此值报警</span><input id="particle50MaxInput" type="number" min="0" step="1" inputmode="numeric" placeholder="请输入上限" aria-label="5.0 µm 粒子报警上限" /></label>
+                  </section>
+                  <section class="particle-rule-row" data-particle-rule="10.0">
+                    <div class="particle-rule-identity"><strong>≥ 10.0 µm</strong><small>粒子数</small></div>
+                    <label class="rule-switch"><input id="particle100EnabledInput" type="checkbox" aria-label="启用 10.0 µm 粒子报警" /><span class="switch-track" aria-hidden="true"></span><span class="switch-copy"><strong>报警</strong><small>当前关闭</small></span></label>
+                    <label class="particle-limit-field"><span>高于此值报警</span><input id="particle100MaxInput" type="number" min="0" step="1" inputmode="numeric" placeholder="请输入上限" aria-label="10.0 µm 粒子报警上限" /></label>
+                  </section>
+                </div>
+                <p class="policy-migration-note"><strong>升级保护：</strong>原有 0.5 µm 规则保持启用；其他粒径默认关闭，填写上限并开启后才参与报警。</p>
+              </section>
+              <div class="alarm-rule-grid environment-rule-grid">
+                <section class="alarm-rule-card"><div><strong>温度</strong><small>°C</small></div><div class="range-fields"><label><span>最低</span><input id="temperatureMinInput" type="number" step="0.1" required /></label><span>—</span><label><span>最高</span><input id="temperatureMaxInput" type="number" step="0.1" required /></label></div></section>
+                <section class="alarm-rule-card"><div><strong>湿度</strong><small>%RH</small></div><div class="range-fields"><label><span>最低</span><input id="humidityMinInput" type="number" step="0.1" required /></label><span>—</span><label><span>最高</span><input id="humidityMaxInput" type="number" step="0.1" required /></label></div></section>
+              </div>
+            </article>
+          </div><aside class="settings-side"><article class="panel data-overview-card"><p class="eyebrow">数据概况</p><h3>存储与同步</h3><dl><div><dt>历史记录</dt><dd id="statsReadings">--</dd></div><div><dt>报警事件</dt><dd id="statsAlarms">--</dd></div><div><dt>最新记录</dt><dd id="statsLatest">--</dd></div><div><dt>待同步</dt><dd id="statsPendingSync">--</dd></div><div><dt>存储方式</dt><dd id="storageMode">--</dd></div></dl><button id="refreshStatsBtn" type="button">刷新数据概况</button></article><article class="boundary-card"><strong>角色边界</strong><p>客户工作台负责监测和报警策略；本机采集器负责设备连接与云端接入。</p></article></aside></section>
+          <footer class="panel settings-save-bar"><div class="save-state"><span id="settingsSaveDot" class="save-state-dot"></span><div><strong id="settingsSaveState" aria-live="polite">所有更改已保存</strong><small>保存后约 30 秒下发到现场采集器。</small></div></div><div class="save-actions"><button id="cancelSettingsBtn" type="button" disabled>放弃更改</button><button id="saveRoomFormBtn" class="primary" type="button" disabled>保存更改</button></div></footer>
+          <article id="emailAlertCard" class="panel settings-card email-alert-card">
+            <header><span class="section-symbol">03</span><div><p class="eyebrow">电邮预警</p><h3>异常及时通知负责人</h3><p>适用于当前客户的全部洁净室。持续超限达到报警延时后通知；同一事件不重复提醒，模拟数据不发送。</p></div></header>
+            <p id="emailServiceState" role="status">请在云端工作台配置电邮预警。</p>
+            <form id="emailAlertForm" hidden>
+              <div class="email-controls">
+                <label class="email-toggle"><input id="emailEnabledInput" type="checkbox" /><span>启用电邮预警</span></label>
+                <label><span>收件邮箱（最多 10 个，以英文逗号分隔）</span><input id="emailRecipientsInput" type="email" multiple maxlength="2550" autocomplete="off" placeholder="quality@example.com, manager@example.com" /></label>
+                <label class="email-toggle"><input id="emailRecoveryInput" type="checkbox" checked /><span>恢复正常时也通知</span></label>
+              </div>
+              <p id="emailValidation" class="email-feedback" role="status" aria-live="polite"></p>
+              <div class="save-actions"><button id="saveEmailBtn" class="primary" type="submit" disabled>保存电邮设置</button><button id="testEmailBtn" type="button" disabled>发送测试邮件</button><button id="refreshEmailBtn" type="button">刷新发送记录</button></div>
+            </form>
+            <p class="workflow-note">仅通知启用后新发生的事件，不补发旧报警。发送成功表示邮件服务器已接受，请另行确认收件箱。关闭通知不撤回已发送或正在发送的邮件。</p>
+            <div id="emailHistory" class="email-history" aria-live="polite"></div>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="collectorDialog" class="management-dialog collector-management-dialog">
+      <form id="collectorForm" method="dialog">
+        <header><div><p class="eyebrow">远程采集器</p><h2>添加远程采集器</h2><p>一个节点只负责自己网络内的设备，避免两台采集器重复读取同一设备。</p></div><button id="closeCollectorDialogBtn" class="dialog-close" type="button" aria-label="关闭添加远程采集器">×</button></header>
+        <section id="collectorCreateStep">
+          <div class="management-fields"><label><span>采集器名称</span><input id="newCollectorNameInput" maxlength="100" placeholder="例如：二楼东侧采集器" required /><small>建议使用“位置 + 用途”，方便分配设备和现场排障。</small></label></div>
+          <div class="pending-explanation"><span aria-hidden="true">i</span><p><strong>创建后仍显示“待激活”</strong><small>目标电脑首次启动专属激活文件后，会自动完成绑定。</small></p></div>
+        </section>
+        <section id="collectorActivationStep" class="collector-activation" hidden>
+          <div class="activation-alert"><strong>客户专属安装包已准备生成</strong><p>安装包内是 24 小时有效且只能使用一次的激活码；下载失败或过期可在采集器卡片重新生成，旧包自动失效。</p></div>
+          <dl><div><dt>云端地址</dt><dd id="collectorCloudUrl">--</dd></div><div><dt>节点 ID</dt><dd id="collectorSiteId">--</dd></div><div><dt>激活状态</dt><dd id="collectorToken">等待安装</dd></div></dl>
+          <button id="copyCollectorActivationBtn" class="secondary-action" type="button">下载自动安装包</button>
+          <ol><li>把 ZIP 复制到目标 Windows 电脑并完整解压</li><li>双击 EXE，系统自动绑定并删除激活文件</li><li>设备通过协议验证后出现在“待分配设备”</li></ol>
+        </section>
+        <p id="collectorFormError" class="form-error" role="alert"></p>
+        <footer><button id="cancelCollectorBtn" type="button">取消</button><button id="saveCollectorBtn" class="primary" type="submit">创建并生成接入信息</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="cleanroomDialog" class="management-dialog">
+      <form id="cleanroomForm" method="dialog">
+        <header><div><p class="eyebrow">新建车间</p><h2>新建车间</h2><p>车间建立后会使用一套安全的默认报警策略，之后可在“设置”中调整。</p></div><button id="closeCleanroomDialogBtn" class="dialog-close" type="button" aria-label="关闭新建车间">×</button></header>
+        <div class="management-fields"><label><span>车间名称</span><input id="newCleanroomNameInput" maxlength="100" placeholder="例如：二楼灌装车间" required /><small>名称会出现在实时监控、报警和报表中。</small></label></div>
+        <p id="cleanroomFormError" class="form-error" role="alert"></p>
+        <footer><button id="cancelCleanroomBtn" type="button">取消</button><button id="saveCleanroomBtn" class="primary" type="submit">创建并继续添加设备</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="manualDeviceDialog" class="management-dialog device-management-dialog">
+      <form id="manualDeviceForm" method="dialog">
+        <header><div><p class="eyebrow">手动添加设备</p><h2>手动添加设备</h2><p>请使用设备固定的局域网地址。保存只代表登记成功，连接状态由现场采集器确认。</p></div><button id="closeManualDeviceDialogBtn" class="dialog-close" type="button" aria-label="关闭手动添加设备">×</button></header>
+        <div class="management-fields device-fields">
+          <label><span>所属车间</span><select id="manualDeviceRoomInput" required></select></label>
+          <label><span>现场采集器</span><select id="manualDeviceSiteInput" required></select><small id="manualDeviceSiteHelp">设备配置会下发到这台采集器。</small></label>
+          <label class="span-two"><span>设备名称</span><input id="manualDeviceNameInput" maxlength="100" placeholder="例如：灌装线粒子计数器 01" required /></label>
+          <label class="span-two"><span>设备局域网 IP</span><input id="manualDeviceHostInput" inputmode="decimal" placeholder="192.168.2.30" required /><small>必须是所选采集器能够访问的私有 IPv4 地址。</small></label>
+          <details class="advanced-fields span-two"><summary>高级连接参数 <span>通常无需修改</span></summary><div><label><span>TCP 端口</span><input id="manualDevicePortInput" type="number" min="1" max="65535" value="502" required /></label><label><span>Slave ID</span><input id="manualDeviceSlaveInput" type="number" min="1" max="247" value="1" required /></label></div></details>
+        </div>
+        <div class="pending-explanation"><span aria-hidden="true">i</span><p><strong>保存后的状态：待采集器确认</strong><small>采集器通常在约 30 秒内取得新配置；收到首条真实读数后自动变为在线。</small></p></div>
+        <p id="manualDeviceFormError" class="form-error" role="alert"></p>
+        <footer><button id="cancelManualDeviceBtn" type="button">取消</button><button id="saveManualDeviceBtn" class="primary" type="submit">保存并等待确认</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="deleteDeviceDialog" class="management-dialog" aria-labelledby="deleteDeviceTitle" aria-describedby="deleteDeviceImpact">
+      <form id="deleteDeviceForm" method="dialog">
+        <header><div><h2 id="deleteDeviceTitle">删除设备</h2><p>请核对要删除的设备。</p></div><button id="closeDeleteDeviceDialogBtn" class="dialog-close" type="button" aria-label="关闭删除设备">×</button></header>
+        <div class="delete-device-details"><strong id="deleteDeviceName" data-i18n-ignore></strong><p id="deleteDeviceContext" data-i18n-ignore></p><p id="deleteDeviceImpact">删除后，该设备将从监控列表移除。历史读数和报警记录保留；现场采集器联网并取得新配置后停止采集。如需重新接入，可再次添加。</p></div>
+        <p id="deleteDeviceFormError" class="form-error" role="alert"></p>
+        <footer><button id="cancelDeleteDeviceBtn" type="button" autofocus>取消</button><button id="confirmDeleteDeviceBtn" class="primary danger-action" type="submit">确认删除</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="lifecycleListDialog" class="management-dialog lifecycle-list-dialog" aria-labelledby="lifecycleListTitle">
+      <header><h2 id="lifecycleListTitle">已删除设备</h2><button id="closeLifecycleList" type="button">关闭</button></header>
+      <p id="lifecycleListHelp"></p>
+      <label><span>筛选设备</span><input id="lifecycleSearch" type="search" maxlength="100" /></label>
+      <p id="lifecycleListError" class="form-error" role="alert"></p><div id="lifecycleListContent"></div>
+      <footer><button id="lifecyclePrevious" type="button">上一页</button><span id="lifecyclePage"></span><button id="lifecycleNext" type="button">下一页</button><button id="refreshLifecycleList" type="button">刷新</button></footer>
+    </dialog>
+    <dialog id="equipmentDialog" class="management-dialog" aria-labelledby="equipmentTitle">
+      <form id="equipmentForm">
+        <header><h2 id="equipmentTitle">编辑设备</h2><button id="closeEquipment" type="button">关闭</button></header>
+        <p id="equipmentIdentity" data-i18n-ignore></p><p id="equipmentHelp"></p>
+        <div id="equipmentEditFields" class="management-fields">
+          <label><span>设备名称</span><input id="equipmentName" maxlength="100" /></label>
+          <label><span>所属车间</span><select id="equipmentRoom"></select></label>
+          <details id="equipmentConnectionFields"><summary>维护设置（企业管理员）</summary>
+            <label><span>现场采集器</span><select id="equipmentSite"></select></label>
+            <label><span>设备局域网 IP</span><input id="equipmentHost" inputmode="decimal" /></label>
+            <label><span>TCP 端口</span><input id="equipmentPort" type="number" min="1" max="65535" /></label>
+            <label><span>Slave ID</span><input id="equipmentSlave" type="number" min="1" max="247" /></label>
+          </details>
+        </div>
+        <div id="equipmentMaintenanceFields" class="management-fields">
+          <label><span>维护原因</span><textarea id="equipmentReason" maxlength="500" rows="3"></textarea></label>
+          <label><span>预计结束时间</span><input id="equipmentUntil" type="datetime-local" /></label>
+        </div>
+        <p id="equipmentError" class="form-error" role="alert"></p>
+        <footer><button id="cancelEquipment" type="button">取消</button><button id="saveEquipment" class="primary" type="submit">保存</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="ipChangeDialog" class="management-dialog" aria-labelledby="ipChangeTitle">
+      <form id="ipChangeForm">
+        <header><h2 id="ipChangeTitle">更换 IP / 处理重复登记</h2><button id="closeIpChange" type="button">关闭</button></header>
+        <p>扫描只能确认连接可用，不能确认是同一台仪表。请核对现场标签或资产编号；保留原设备编号、名称、车间和历史。</p>
+        <div class="management-fields">
+          <label><span>保留的原设备</span><select id="ipKeepDevice" required></select></label>
+          <label><span>新地址是否已重复登记</span><select id="ipDuplicateDevice"></select></label>
+          <label><span>新的设备 IP</span><input id="ipNewHost" required inputmode="decimal" /></label>
+          <label><span>TCP 端口</span><input id="ipNewPort" type="number" min="1" max="65535" required /></label>
+          <label><span>Slave ID</span><input id="ipNewSlave" type="number" min="1" max="247" required /></label>
+          <p id="ipChangePreview" data-i18n-ignore></p>
+          <label class="identity-confirm"><input id="ipSameDevice" type="checkbox" /><span>我已核对，旧地址和新地址属于同一台物理仪表</span></label>
+        </div>
+        <p id="ipChangeError" class="form-error" role="alert"></p>
+        <footer><button id="cancelIpChange" type="button">取消</button><button id="saveIpChange" class="primary" type="submit" disabled>确认更新原设备</button></footer>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="./i18n.js?v=20260908-ip-change"></script>
+    <script src="./app.js?v=20260908-ip-change"></script>
+    <script src="./device-lifecycle.js?v=20260908-ip-change"></script>
+  </body>
+</html>

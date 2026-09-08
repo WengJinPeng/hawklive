@@ -1,0 +1,131 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN:?Set DASHBOARD_DOMAIN}
+      DCP_ACME_CA: ${DCP_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    depends_on:
+      ingest-api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${DCP_CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - autovacuum_work_mem=16MB
+      - -c
+      - max_connections=30
+    environment:
+      POSTGRES_DB: dcp8001
+      POSTGRES_USER: dcp8001
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dcp8001 -d dcp8001"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ingest-api:
+    image: hawkhive-cloud:local
+    build:
+      context: .
+      dockerfile: Dockerfile.cloud
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      DATABASE_URL: postgresql://dcp8001:${POSTGRES_PASSWORD}@postgres:5432/dcp8001
+      DCP_PUBLIC_URL: https://${DASHBOARD_DOMAIN}
+      DCP_ACTIVATION_SECRET: ${DCP_ACTIVATION_SECRET:?Set DCP_ACTIVATION_SECRET}
+      DASHBOARD_SECURE_COOKIE: ${DASHBOARD_SECURE_COOKIE:-1}
+      DCP_SMTP_HOST: ${DCP_SMTP_HOST:-}
+      DCP_SMTP_PORT: ${DCP_SMTP_PORT:-587}
+      DCP_SMTP_SECURITY: ${DCP_SMTP_SECURITY:-starttls}
+      DCP_SMTP_FROM: ${DCP_SMTP_FROM:-}
+      DCP_SMTP_USERNAME: ${DCP_SMTP_USERNAME:-}
+      DCP_SMTP_PASSWORD: ${DCP_SMTP_PASSWORD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  email-worker:
+    image: hawkhive-cloud:local
+    stop_grace_period: 90s
+    pull_policy: never
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["python", "email_alerts.py"]
+    environment:
+      DATABASE_URL: postgresql://dcp8001:${POSTGRES_PASSWORD}@postgres:5432/dcp8001
+      DCP_PUBLIC_URL: https://${DASHBOARD_DOMAIN}
+      DCP_SMTP_HOST: ${DCP_SMTP_HOST:-}
+      DCP_SMTP_PORT: ${DCP_SMTP_PORT:-587}
+      DCP_SMTP_SECURITY: ${DCP_SMTP_SECURITY:-starttls}
+      DCP_SMTP_FROM: ${DCP_SMTP_FROM:-}
+      DCP_SMTP_USERNAME: ${DCP_SMTP_USERNAME:-}
+      DCP_SMTP_PASSWORD: ${DCP_SMTP_PASSWORD:-}
+    depends_on:
+      ingest-api:
+        condition: service_healthy
+
+  backup-runner:
+    image: hawkhive-cloud:local
+    pull_policy: never
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["python", "backup_scheduler.py"]
+    environment:
+      DATABASE_URL: postgresql://dcp8001:${POSTGRES_PASSWORD}@postgres:5432/dcp8001
+      DCP_PUBLIC_URL: https://${DASHBOARD_DOMAIN}
+      DCP_DAILY_BACKUP_DIR: /app/backups/daily
+      DCP_MONTHLY_BACKUP_DIR: /app/monthly-backups
+      DCP_BACKUP_TIME: ${DCP_BACKUP_TIME:-02:00}
+      DCP_BACKUP_TIMEZONE: ${DCP_BACKUP_TIMEZONE:-Asia/Singapore}
+      DCP_BACKUP_RETRY_SECONDS: ${DCP_BACKUP_RETRY_SECONDS:-900}
+      DCP_DAILY_BACKUP_RETENTION_DAYS: ${DCP_DAILY_BACKUP_RETENTION_DAYS:-14}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ./backups/daily
+        target: /app/backups/daily
+      - type: bind
+        source: ${DCP_MONTHLY_BACKUP_HOST_DIR:-./backups/monthly}
+        target: /app/monthly-backups
+
+volumes:
+  caddy_config:
+  caddy_data:
+  postgres_data:

@@ -68,6 +68,8 @@ def open_console_when_ready(port: int, timeout: float = 20.0) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the HawkHive DPC8001-G collector.")
+    from cloud_sync import COLLECTOR_VERSION
+    parser.add_argument("--version", action="version", version=COLLECTOR_VERSION)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--demo", action="store_true", help="Use generated demo readings")
     mode.add_argument("--device", action="store_true", help="Read configured DPC8001-G devices")
@@ -75,6 +77,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", help="Override the local runtime data directory")
     parser.add_argument("--activation", help="Use a downloaded one-time activation file")
     parser.add_argument("--enrollment", help="Use a reusable customer enrollment file")
+    parser.add_argument("--supervise", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--managed-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--install-elevated", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--no-browser", action="store_true", help="Do not open the local console")
     return parser.parse_args(argv)
@@ -84,6 +88,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if not 1 <= args.port <= 65535:
         raise SystemExit("Port must be between 1 and 65535")
+    if args.supervise:
+        from collector_updater import run_supervisor
+        return run_supervisor(Path(args.data_dir).resolve(), args.port)
     activation_path = next(
         (path for path in activation_candidates(args.activation) if path.is_file()),
         None,
@@ -153,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         os.name == "nt"
         and (activation_path is not None or enrollment_path is not None)
         and not args.demo
+        and not args.managed_worker
     ):
         if request_elevated_install(activation_path, enrollment_path):
             return 0
@@ -163,6 +171,18 @@ def main(argv: list[str] | None = None) -> int:
         return 4
     data_dir = configure_environment(demo=args.demo, data_dir=args.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
+    if args.managed_worker:
+        from update_protocol import read_json
+        def watch_supervisor():
+            while True:
+                command = read_json(data_dir / "collector-supervisor-stop.json")
+                if os.environ.get("DCP_SUPERVISOR_NONCE") and command.get("nonce") == os.environ["DCP_SUPERVISOR_NONCE"]:
+                    import dashboard_server
+                    if dashboard_server.HTTP_SERVER is not None:
+                        dashboard_server.request_shutdown()
+                        return
+                time.sleep(0.5)
+        threading.Thread(target=watch_supervisor, daemon=True).start()
     enrolled = None
     while True:
         try:

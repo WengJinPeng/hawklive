@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +19,7 @@ from alarm_config import (
 )
 from auth_service import DEFAULT_CUSTOMER_ID
 from dcp8001_collector import Dcp8001TcpClient
+from collector_diagnostics import diagnostic_scope
 
 PRIVATE_DEVICE_NETWORKS = tuple(
     ipaddress.ip_network(value)
@@ -53,7 +54,7 @@ class MonitorOptions:
     record_seconds: float = _env_float("DCP_RECORD_SECONDS", 120.0)
     device_timeout: float = _env_float("DCP_DEVICE_TIMEOUT", 5.0)
     poll_workers: int = max(1, min(_env_int("DCP_POLL_WORKERS", 8), 32))
-    offline_backoff_max: float = max(10.0, _env_float("DCP_OFFLINE_BACKOFF_MAX", 300.0))
+    offline_backoff_max: float = max(10.0, _env_float("DCP_OFFLINE_BACKOFF_MAX", 10.0))
     demo: bool = _env_enabled("DCP_DEMO_MODE")
 
 
@@ -88,6 +89,7 @@ class MonitoringService:
         ] = {}
         self._device_io_locks: dict[str, threading.RLock] = {}
         self._device_failures: dict[str, int] = {}
+        self._failure_log_state: dict[str, tuple[str, float, int]] = {}
         self._next_poll_at: dict[str, float] = {}
 
     @contextmanager
@@ -1045,14 +1047,43 @@ class MonitoringService:
     def _run(self) -> None:
         workers = max(1, min(self.options.poll_workers, 32))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="dcp-device") as executor:
+            in_flight = {}
             while not self._stop.is_set():
-                configured = [
-                    (room, device)
-                    for room in self.configuration()
-                    for device in room["devices"]
-                    if device["enabled"]
-                ]
+                for future in list(in_flight):
+                    if future.done():
+                        in_flight.pop(future)
+                        try:
+                            future.result()
+                        except Exception as exc:
+                            self._log_diagnostic("ERROR", "monitor_worker_failed", str(exc))
+                try:
+                    configured = [
+                        (room, device)
+                        for room in self.configuration()
+                        for device in room["devices"]
+                        if device["enabled"]
+                    ]
+                except Exception as exc:
+                    self._log_diagnostic("ERROR", "monitor_configuration_failed", str(exc))
+                    self._stop.wait(1.0)
+                    continue
                 active_ids = {str(device["id"]) for _room, device in configured}
+                busy_ids = set(in_flight.values())
+                endpoints = {
+                    str(device["id"]): (str(device["host"]), int(device["tcpPort"]), int(device["slave"]))
+                    for _room, device in configured
+                }
+                with self._client_lock:
+                    obsolete_ids = [
+                        device_id for device_id, (endpoint, _client) in self._device_clients.items()
+                        if device_id not in busy_ids and endpoints.get(device_id) != endpoint
+                    ]
+                for device_id in obsolete_ids:
+                    # Disabled/removed registrations must release their session:
+                    # embedded gateways may accept only one collection client.
+                    self._close_device_client(device_id)
+                    with self._lock:
+                        self._next_poll_at.pop(device_id, None)
                 now = time.monotonic()
                 with self._lock:
                     for device_id in set(self._next_poll_at) - active_ids:
@@ -1066,20 +1097,35 @@ class MonitoringService:
                             device,
                         )
                         for index, (room, device) in enumerate(configured)
+                        if str(device["id"]) not in busy_ids
                     )
-                due = [item for item in scheduled if item[0] <= now][:workers]
-                if not due:
-                    next_due = scheduled[0][0] if scheduled else now + 1.0
-                    self._stop.wait(max(0.1, min(1.0, next_due - now)))
-                    continue
-                futures = [executor.submit(self._poll_device, room, device) for _at, _index, room, device in due]
-                for future in futures:
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        self.add_log("ERROR", "monitor_worker_failed", str(exc))
+                due = [item for item in scheduled if item[0] <= now][:workers - len(in_flight)]
+                for _at, _index, room, device in due:
+                    future = executor.submit(self._poll_device, room, device)
+                    in_flight[future] = str(device["id"])
+                # A slow peer must not hold the next poll of a healthy peer.
+                next_due = scheduled[0][0] if scheduled and not due else now + 1.0
+                pause = max(0.1, min(1.0, next_due - time.monotonic()))
+                if in_flight:
+                    wait(in_flight, timeout=pause, return_when=FIRST_COMPLETED)
+                else:
+                    self._stop.wait(pause)
+
+    def _log_diagnostic(self, level: str, event: str, message: str) -> None:
+        try:
+            self.add_log(level, event, message)
+        except Exception:
+            pass  # Operational logging cannot change a physical reading result.
 
     def _poll_device(self, room: dict[str, object], device: dict[str, object]) -> None:
+        with diagnostic_scope(room.get("customer_id"), device.get("site_id")):
+            self._poll_device_scoped(room, device)
+
+    def _poll_device_scoped(self, room: dict[str, object], device: dict[str, object]) -> None:
+        started = time.monotonic()
+        client = None
+        device_id = str(device["id"])
+        endpoint = f"{device['host']}:{device['tcpPort']}/slave={device['slave']}"
         try:
             if self.options.demo:
                 reading = self.demo_factory(str(device["name"]))
@@ -1087,7 +1133,8 @@ class MonitoringService:
             else:
                 device_id = str(device["id"])
                 with self._io_lock_for_device(device_id):
-                    reading = self._client_for_device(device).read_realtime()
+                    client = self._client_for_device(device)
+                    reading = client.read_realtime()
                 source = "device"
             data = reading if isinstance(reading, dict) else reading.__dict__
             data = dict(data)
@@ -1103,19 +1150,30 @@ class MonitoringService:
                     "source": source,
                     "online": True,
                     "last_reading_at": data["timestamp"],
+                    "connection_checked_at": time.time(),
                 }
             )
             changed = self._evaluate_alarms(data, room["thresholds"])
             with self._lock:
+                previous = self.latest.get(device_id, {})
+                first_read = not previous
+                recovered_failures = self._device_failures.get(device_id, 0)
+            now = float(data["timestamp"])
+            if first_read or recovered_failures or changed or now - self.last_recorded.get(device_id, 0) >= self.options.record_seconds:
+                self._persist_sample(data)
+            with self._lock:
                 self.latest[str(device["id"])] = data
                 self._device_failures.pop(str(device["id"]), None)
+                self._failure_log_state.pop(device_id, None)
                 self._next_poll_at[str(device["id"])] = (
                     time.monotonic() + max(0.1, self.options.poll_seconds)
                 )
-            now = float(data["timestamp"])
-            if changed or now - self.last_recorded.get(str(device["id"]), 0) >= self.options.record_seconds:
-                self.record_reading(data, source, str(device["host"]), str(room["name"]), str(device["name"]))
-                self.last_recorded[str(device["id"])] = now
+            if source == "device" and (first_read or recovered_failures):
+                self._log_diagnostic("INFO", "device_recovered" if recovered_failures else "device_connected",
+                             f"{device['name']}: device={device_id} endpoint={endpoint} "
+                             f"read_ms={round((time.monotonic()-started)*1000)} "
+                             f"recovered_after_failures={recovered_failures} poll_seconds={self.options.poll_seconds} "
+                             f"last_success_at={previous.get('last_reading_at')} recovered_at={now}")
         except Exception as exc:
             device_id = str(device["id"])
             self._close_device_client(device_id)
@@ -1123,7 +1181,7 @@ class MonitoringService:
                 failure_count = self._device_failures.get(device_id, 0) + 1
                 self._device_failures[device_id] = failure_count
                 delay = min(
-                    max(1.0, self.options.poll_seconds) * (2 ** min(failure_count - 1, 6)),
+                    min(2.0, max(1.0, self.options.poll_seconds)) * (2 ** min(failure_count - 1, 8)),
                     self.options.offline_backoff_max,
                 )
                 self._next_poll_at[device_id] = time.monotonic() + delay
@@ -1138,10 +1196,39 @@ class MonitoringService:
                     "online": False,
                     "error": str(exc),
                     "timestamp": time.time(),
+                    "connection_checked_at": time.time(),
                     "failure_count": failure_count,
                     "retry_at": time.time() + delay,
                 }
-            self.add_log("ERROR", "device_offline", f"{device['name']}: {exc}")
+            # Save the last actually received sample at its original timestamp.
+            # Repeated failures must neither duplicate it nor invent outage values.
+            if previous.get("online") and previous.get("source") == "device":
+                try:
+                    self._persist_sample(previous)
+                except Exception as storage_exc:
+                    self._log_diagnostic("ERROR", "device_sample_save_failed", f"device={device_id}: {storage_exc}")
+            # First/change immediately; repeated identical errors summarized every
+            # five minutes. Recovery always records the total failed attempts.
+            now = time.monotonic()
+            previous_error, logged_at, logged_count = self._failure_log_state.get(device_id, ("", 0.0, 0))
+            error = str(exc)
+            if failure_count == 1 or error != previous_error or now - logged_at >= 300:
+                self._failure_log_state[device_id] = (error, now, failure_count)
+                self._log_diagnostic("ERROR", "device_offline",
+                             f"{device['name']}: {error}; device={device_id} endpoint={endpoint} "
+                             f"stage={getattr(client, 'diagnostic_stage', 'connect')} "
+                             f"request_sent={getattr(client, 'request_sent', False)} "
+                             f"elapsed_ms={round((now-started)*1000)} failures={failure_count} "
+                             f"occurrences={failure_count-logged_count if error == previous_error else 1} "
+                             f"retry_seconds={delay:g}")
+
+    def _persist_sample(self, data: dict[str, object]) -> None:
+        device_id = str(data["device_id"])
+        measured_at = float(data["timestamp"])
+        if measured_at == self.last_recorded.get(device_id):
+            return
+        self.record_reading(dict(data), str(data["source"]), str(data["host"]), str(data["cleanroom"]), str(data["device"]))
+        self.last_recorded[device_id] = measured_at
 
     def _metric_checks(
         self,

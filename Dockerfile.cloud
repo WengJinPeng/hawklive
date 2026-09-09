@@ -15,8 +15,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements-cloud.txt ./
 RUN pip install --no-cache-dir -r requirements-cloud.txt
-COPY alarm_config.py auth_service.py cloud_api.py device_lifecycle.py email_api.py email_alerts.py cloud_schema.sql report_i18n.py provision_edge.py provision_customer.py cloud_backup.py backup_scheduler.py archive_cloud_data.py ./
+COPY update_protocol.py collector_update_api.py connection_status.py collector_diagnostics.py diagnostics_api.py alarm_config.py auth_service.py cloud_api.py data_management.py device_lifecycle.py email_api.py email_alerts.py cloud_schema.sql report_i18n.py provision_edge.py provision_customer.py cloud_backup.py backup_scheduler.py archive_cloud_data.py ./
 COPY release/ ./release/
 RUN mkdir -p public
-COPY public/index.html public/device-lifecycle.js public/app.js public/i18n.js public/styles.css public/wallboard.html public/wallboard.css public/wallboard.js ./public/
+COPY public/index.html public/diagnostics.js public/device-lifecycle.js public/app.js public/i18n.js public/styles.css public/wallboard.html public/wallboard.css public/wallboard.js ./public/
 CMD ["uvicorn", "cloud_api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0b252d" />
     <title>HawkHive 洁净环境监测</title>
-    <link rel="stylesheet" href="./styles.css?v=20260908-ip-change" />
+    <link rel="stylesheet" href="./styles.css?v=20260909-auto-update" />
   </head>
   <body class="auth-pending">
     <section id="loginView" class="login-shell" aria-labelledby="loginTitle">
@@ -192,9 +192,9 @@
           <section class="topology-summary" aria-label="场所设备摘要">
             <article><span>车间</span><strong id="topologyRoomCount">0</strong><small id="topologyRoomCapacity">最多 200 个</small></article>
             <article><span>已登记设备</span><strong id="topologyDeviceCount">0</strong><small id="topologyDeviceCapacity">最多 100 台</small></article>
-            <article><span>在线设备</span><strong id="topologyOnlineCount">0</strong><small>收到新鲜真实读数</small></article>
-            <article><span>离线设备</span><strong id="topologyOfflineCount">0</strong><small>曾有数据，当前已中断</small></article>
-            <article><span>待确认</span><strong id="topologyPendingCount">0</strong><small>尚未收到首条真实读数</small></article>
+            <article><span>在线设备</span><strong id="topologyOnlineCount">0</strong><small>最近一次设备通信检查成功</small></article>
+            <article><span>离线设备</span><strong id="topologyOfflineCount">0</strong><small>最近一次设备通信检查失败</small></article>
+            <article><span>待确认</span><strong id="topologyPendingCount">0</strong><small>尚无有效的设备通信检查结果</small></article>
           </section>
 
           <section class="topology-layout">
@@ -211,7 +211,7 @@
                 <p>适合已知固定 IP 的单台设备。保存后配置会下发给所选现场采集器，但不会立即标记为在线。</p>
                 <button id="manualAddDeviceBtn" class="secondary-action" type="button">手动添加设备</button>
               </article>
-              <article class="topology-boundary-note"><strong>为什么保存后仍是“待确认”？</strong><p>云端无法直接访问车间内网。只有现场采集器成功读取设备并上传首条真实数据，平台才能证明设备连接正常。</p></article>
+              <article class="topology-boundary-note"><strong>为什么保存后仍是“待确认”？</strong><p>云端无法直接访问车间内网。设备连接由现场采集器检查并上报；采集器失联或尚无检查结果时，设备状态待确认。</p></article>
             </aside>
           </section>
         </section>
@@ -264,7 +264,7 @@
                 <section class="alarm-rule-card"><div><strong>湿度</strong><small>%RH</small></div><div class="range-fields"><label><span>最低</span><input id="humidityMinInput" type="number" step="0.1" required /></label><span>—</span><label><span>最高</span><input id="humidityMaxInput" type="number" step="0.1" required /></label></div></section>
               </div>
             </article>
-          </div><aside class="settings-side"><article class="panel data-overview-card"><p class="eyebrow">数据概况</p><h3>存储与同步</h3><dl><div><dt>历史记录</dt><dd id="statsReadings">--</dd></div><div><dt>报警事件</dt><dd id="statsAlarms">--</dd></div><div><dt>最新记录</dt><dd id="statsLatest">--</dd></div><div><dt>待同步</dt><dd id="statsPendingSync">--</dd></div><div><dt>存储方式</dt><dd id="storageMode">--</dd></div></dl><button id="refreshStatsBtn" type="button">刷新数据概况</button></article><article class="boundary-card"><strong>角色边界</strong><p>客户工作台负责监测和报警策略；本机采集器负责设备连接与云端接入。</p></article></aside></section>
+          </div><aside class="settings-side"><article class="panel data-overview-card"><p class="eyebrow">数据概况</p><h3>存储与同步</h3><dl><div><dt>历史记录</dt><dd id="statsReadings">--</dd></div><div><dt>报警事件</dt><dd id="statsAlarms">--</dd></div><div><dt>最新记录</dt><dd id="statsLatest">--</dd></div><div><dt>待同步</dt><dd id="statsPendingSync">--</dd></div><div><dt>存储方式</dt><dd id="storageMode">--</dd></div></dl><button id="refreshStatsBtn" type="button">刷新数据概况</button></article><article id="dataCleanupCard" class="panel data-cleanup-card" hidden><p class="eyebrow">数据清理</p><h3>释放不再需要的数据</h3><p class="cleanup-intro">仅主管理员可执行。操作不可恢复，执行前会再次核对影响范围。</p><section><div><strong>已删除设备数据</strong><small id="retiredCleanupSummary">正在统计…</small></div><button type="button" data-cleanup-scope="retired_devices">清理</button></section><section><div><strong>全部监测数据</strong><small id="globalCleanupSummary">正在统计…</small></div><button class="danger-outline" type="button" data-cleanup-scope="all_monitoring">全局清理</button></section><button id="refreshCleanupPreviewBtn" class="cleanup-refresh" type="button">刷新清理统计</button></article><article class="boundary-card"><strong>角色边界</strong><p>客户工作台负责监测和报警策略；本机采集器负责设备连接与云端接入。</p></article></aside></section>
           <footer class="panel settings-save-bar"><div class="save-state"><span id="settingsSaveDot" class="save-state-dot"></span><div><strong id="settingsSaveState" aria-live="polite">所有更改已保存</strong><small>保存后约 30 秒下发到现场采集器。</small></div></div><div class="save-actions"><button id="cancelSettingsBtn" type="button" disabled>放弃更改</button><button id="saveRoomFormBtn" class="primary" type="button" disabled>保存更改</button></div></footer>
           <article id="emailAlertCard" class="panel settings-card email-alert-card">
             <header><span class="section-symbol">03</span><div><p class="eyebrow">电邮预警</p><h3>异常及时通知负责人</h3><p>适用于当前客户的全部洁净室。持续超限达到报警延时后通知；同一事件不重复提醒，模拟数据不发送。</p></div></header>
@@ -322,7 +322,7 @@
           <label class="span-two"><span>设备局域网 IP</span><input id="manualDeviceHostInput" inputmode="decimal" placeholder="192.168.2.30" required /><small>必须是所选采集器能够访问的私有 IPv4 地址。</small></label>
           <details class="advanced-fields span-two"><summary>高级连接参数 <span>通常无需修改</span></summary><div><label><span>TCP 端口</span><input id="manualDevicePortInput" type="number" min="1" max="65535" value="502" required /></label><label><span>Slave ID</span><input id="manualDeviceSlaveInput" type="number" min="1" max="247" value="1" required /></label></div></details>
         </div>
-        <div class="pending-explanation"><span aria-hidden="true">i</span><p><strong>保存后的状态：待采集器确认</strong><small>采集器通常在约 30 秒内取得新配置；收到首条真实读数后自动变为在线。</small></p></div>
+        <div class="pending-explanation"><span aria-hidden="true">i</span><p><strong>保存后的状态：待采集器确认</strong><small>采集器通常在约 30 秒内取得新配置；设备通信检查成功并上报后自动变为在线。</small></p></div>
         <p id="manualDeviceFormError" class="form-error" role="alert"></p>
         <footer><button id="cancelManualDeviceBtn" type="button">取消</button><button id="saveManualDeviceBtn" class="primary" type="submit">保存并等待确认</button></footer>
       </form>
@@ -334,6 +334,24 @@
         <div class="delete-device-details"><strong id="deleteDeviceName" data-i18n-ignore></strong><p id="deleteDeviceContext" data-i18n-ignore></p><p id="deleteDeviceImpact">删除后，该设备将从监控列表移除。历史读数和报警记录保留；现场采集器联网并取得新配置后停止采集。如需重新接入，可再次添加。</p></div>
         <p id="deleteDeviceFormError" class="form-error" role="alert"></p>
         <footer><button id="cancelDeleteDeviceBtn" type="button" autofocus>取消</button><button id="confirmDeleteDeviceBtn" class="primary danger-action" type="submit">确认删除</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="deleteWorkshopDialog" class="management-dialog" aria-labelledby="deleteWorkshopTitle" aria-describedby="deleteWorkshopImpact">
+      <form id="deleteWorkshopForm" method="dialog">
+        <header><div><h2 id="deleteWorkshopTitle">删除车间</h2><p>仅空车间可以删除。</p></div><button id="closeDeleteWorkshopDialogBtn" class="dialog-close" type="button" aria-label="关闭删除车间">×</button></header>
+        <div class="delete-device-details"><strong id="deleteWorkshopName" data-i18n-ignore></strong><p id="deleteWorkshopImpact">删除会永久移除车间及其报警规则。车间仍有设备或监测记录时，系统会阻止操作。</p><label><span>输入车间名称以确认</span><input id="deleteWorkshopConfirmInput" maxlength="100" autocomplete="off" /></label></div>
+        <p id="deleteWorkshopFormError" class="form-error" role="alert"></p>
+        <footer><button id="cancelDeleteWorkshopBtn" type="button" autofocus>取消</button><button id="confirmDeleteWorkshopBtn" class="primary danger-action" type="submit" disabled>永久删除车间</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="dataCleanupDialog" class="management-dialog" aria-labelledby="dataCleanupTitle" aria-describedby="dataCleanupImpact">
+      <form id="dataCleanupForm" method="dialog">
+        <header><div><h2 id="dataCleanupTitle">清理数据</h2><p>此操作不可恢复。</p></div><button id="closeDataCleanupDialogBtn" class="dialog-close" type="button" aria-label="关闭数据清理">×</button></header>
+        <div class="cleanup-dialog-body"><strong id="dataCleanupScopeLabel"></strong><p id="dataCleanupImpact"></p><dl id="dataCleanupCounts"></dl><label><span>请输入 <code id="dataCleanupConfirmCode" data-i18n-ignore></code> 以确认</span><input id="dataCleanupConfirmInput" maxlength="80" autocomplete="off" spellcheck="false" /></label><p>全局清理仅影响当前客户的监测记录；车间、启用设备、采集器和账号配置会保留。采集器继续运行时，新数据会再次写入。</p></div>
+        <p id="dataCleanupFormError" class="form-error" role="alert"></p>
+        <footer><button id="cancelDataCleanupBtn" type="button" autofocus>取消</button><button id="confirmDataCleanupBtn" class="primary danger-action" type="submit" disabled>永久清理</button></footer>
       </form>
     </dialog>
 
@@ -385,9 +403,25 @@
       </form>
     </dialog>
 
+    <dialog id="diagnosticsDialog" class="management-dialog diagnostics-dialog" aria-labelledby="diagnosticsTitle">
+      <header><div><h2 id="diagnosticsTitle">采集器诊断日志</h2><p id="diagnosticsNode" data-i18n-ignore></p></div><button id="closeDiagnostics" type="button">关闭</button></header>
+      <p class="diagnostics-help">仅显示已上传的运行日志。设备离线不影响查看已有日志；采集电脑断网期间的日志需联网后补传。</p>
+      <form id="diagnosticsFilters" class="diagnostics-filters">
+        <label><span>接收时间</span><select id="diagnosticsHours"><option value="1">最近 1 小时</option><option value="24" selected>最近 24 小时</option><option value="168">最近 7 天</option><option value="720">最近 30 天</option></select></label>
+        <label><span>日志级别</span><select id="diagnosticsLevel"><option value="">全部级别</option><option value="ERROR">ERROR</option><option value="WARNING">WARNING</option><option value="WARN">WARN</option><option value="INFO">INFO</option><option value="CRITICAL">CRITICAL</option><option value="DEBUG">DEBUG</option></select></label>
+        <label class="diagnostics-search"><span>设备或关键词</span><input id="diagnosticsQuery" maxlength="100" placeholder="设备 IP、名称或错误内容" /></label>
+        <button id="refreshDiagnostics" class="primary" type="submit">查询 / 刷新</button>
+      </form>
+      <p id="diagnosticsStatus" role="status" aria-live="polite"></p>
+      <div id="diagnosticsResults" class="diagnostics-results"></div>
+      <footer><button id="moreDiagnostics" type="button" hidden>加载更早日志</button><button id="exportDiagnostics" type="button" disabled>导出当前结果</button></footer>
+      <p class="diagnostics-help">日志已脱敏。云端最多保留 30 天、每节点 50,000 条；无日志时请确认采集器已升级并已完成配置同步。</p>
+    </dialog>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="./i18n.js?v=20260908-ip-change"></script>
-    <script src="./app.js?v=20260908-ip-change"></script>
-    <script src="./device-lifecycle.js?v=20260908-ip-change"></script>
+    <script src="./i18n.js?v=20260909-auto-update"></script>
+    <script src="./app.js?v=20260909-auto-update"></script>
+    <script src="./diagnostics.js?v=20260909-auto-update"></script>
+    <script src="./device-lifecycle.js?v=20260908-data-management"></script>
   </body>
 </html>

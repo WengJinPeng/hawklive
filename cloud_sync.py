@@ -17,8 +17,9 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from device_discovery import scan_modbus_networks
+from collector_diagnostics import init_queue, enqueue, prune_queue, redact, diagnostic_scope
 
-COLLECTOR_VERSION = os.environ.get("DCP_COLLECTOR_VERSION", "0.5.1").strip() or "0.5.1"
+COLLECTOR_VERSION = "0.6.0"
 
 
 def canonical_uuid(value: object) -> str:
@@ -52,7 +53,10 @@ class CloudSyncService:
         self.token = token
         self.site_id = site_id
         self.customer_id: str | None = None
-        self.add_log = add_log
+        def scoped_log(level, event, message):
+            with diagnostic_scope(self.customer_id, self.site_id):
+                add_log(level, event, redact(message, (self.token,)))
+        self.add_log = scoped_log
         self.batch_size = max(1, min(batch_size, 1000))
         self.latest_provider = latest_provider
         self.config_applier = config_applier
@@ -95,6 +99,9 @@ class CloudSyncService:
         self._channel_context = threading.local()
         self._channel_errors: dict[str, str] = {}
         self._config_ready = threading.Event()
+        self._last_diagnostic_snapshot = 0.0
+        with self.connect() as db:
+            init_queue(db)
 
     @classmethod
     def from_environment(
@@ -373,6 +380,8 @@ class CloudSyncService:
                 "monitor_running": bool(context.get("monitor_running", True)),
                 "device_total": int(context.get("device_total") or 0),
                 "device_online": int(context.get("device_online") or 0),
+                "device_states": context.get("device_states"),
+                "update_status": context.get("update_status"),
                 "last_reading_at": context.get("last_reading_at"),
                 "pending_uploads": self.pending_count(),
                 "quarantined_uploads": self.quarantined_count(),
@@ -827,6 +836,53 @@ class CloudSyncService:
         self._mark_success()
         return len(sent)
 
+    def sync_diagnostics_once(self) -> int:
+        if not self.customer_id:
+            return 0
+        now = time.monotonic()
+        with self.connect() as db:
+            prune_queue(db)
+        if now - self._last_diagnostic_snapshot >= 300 or not self._last_diagnostic_snapshot:
+            context = self.status_provider() if self.status_provider else {}
+            # Allowlist only operational values; no full config, token or database.
+            snapshot = {key: context.get(key) for key in (
+                "monitor_running", "poll_seconds", "record_seconds", "device_total",
+                "device_online", "last_reading_at",
+            )}
+            storage = context.get("storage") or {}
+            snapshot["last_error"] = redact(context.get("last_error") or "", (self.token,))
+            with self.connect() as db:
+                snapshot["logs_discarded_total"] = db.execute("SELECT discarded FROM diagnostic_queue_stats WHERE id=1").fetchone()[0]
+            snapshot.update(version=COLLECTOR_VERSION, config_revision=self._last_config_revision,
+                            disk_free_bytes=storage.get("disk_free_bytes"), storage_state=storage.get("state"))
+            with self.connect() as db:
+                enqueue(db, self.customer_id, self.site_id, self.instance_id, "INFO",
+                        "collector_snapshot", json.dumps(snapshot, ensure_ascii=False))
+            self._last_diagnostic_snapshot = now
+        with self.connect() as db:
+            rows = db.execute("""SELECT * FROM diagnostic_outbox
+                WHERE customer_id=? AND site_id=? AND instance_id=? ORDER BY seq LIMIT 100""",
+                (self.customer_id, self.site_id, self.instance_id)).fetchall()
+        if not rows:
+            return 0
+        logs = [{key: row[key] for key in ("record_uuid", "timestamp", "level", "event", "message")} for row in rows]
+        for item in logs:
+            item["message"] = redact(item["message"], (self.token,))
+        request = urllib.request.Request(
+            f"{self.base_url}/api/v1/edge/diagnostics/batch",
+            data=json.dumps({"site_id": self.site_id, "logs": logs}, ensure_ascii=False).encode(),
+            method="POST", headers=self._headers(json_body=True),
+        )
+        payload = self._request_json(request)
+        expected = {canonical_uuid(item["record_uuid"]) for item in logs}
+        if not payload.get("ok") or {canonical_uuid(value) for value in payload.get("accepted", [])} != expected:
+            raise RuntimeError("Cloud did not acknowledge every diagnostic log")
+        with self.connect() as db:
+            db.executemany("DELETE FROM diagnostic_outbox WHERE record_uuid=? AND customer_id=? AND site_id=? AND instance_id=?",
+                           [(item["record_uuid"], self.customer_id, self.site_id, self.instance_id) for item in logs])
+        self._mark_success()
+        return len(logs)
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
@@ -887,7 +943,9 @@ class CloudSyncService:
         self._channel_context.name = name
         failure_count = 0
         while not self._stop.is_set():
-            if name != "config" and self.config_applier is not None and not self._config_ready.is_set():
+            # Diagnostics must report an authenticated configuration-apply failure
+            # even while measurement uploads are still waiting for configuration.
+            if name not in {"config", "diagnostics"} and self.config_applier is not None and not self._config_ready.is_set():
                 self._stop.wait(0.25)
                 continue
             try:
@@ -916,6 +974,7 @@ class CloudSyncService:
             ("latest", self.sync_latest_once, 10.0, False),
             ("readings", self.sync_once, 10.0, True),
             ("alarms", self.sync_alarms_once, 10.0, True),
+            ("diagnostics", self.sync_diagnostics_once, 30.0, True),
         ]
         if self.remote_discovery_enabled:
             channels.append(("discovery", self.pull_discovery_job_once, self.discovery_interval, False))

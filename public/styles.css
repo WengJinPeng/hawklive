@@ -537,6 +537,9 @@ tbody tr:hover { background: #f7fbfb; }
 .topology-side { position: sticky; top: 20px; }
 .topology-room-card { overflow: hidden; }
 .topology-room-card > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; border-bottom: 1px solid var(--line); background: #f7faf9; }
+.room-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.workshop-delete-action { min-height: 44px; padding: 0 11px; color: var(--red); background: #fff; border: 1px solid #edc7cf; font-size: 0.7rem; font-weight: 760; }
+.workshop-delete-action:hover { background: var(--red-soft); border-color: var(--red); }
 .room-card-identity { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .room-card-identity > span { width: 38px; height: 38px; flex: 0 0 38px; display: grid; place-items: center; color: var(--teal-dark); background: var(--teal-soft); border-radius: 10px; font-size: 0.65rem; font-weight: 900; }
 .room-card-identity > div { min-width: 0; }
@@ -707,6 +710,29 @@ tbody tr:hover { background: #f7fbfb; }
 .data-overview-card dt { color: var(--muted); font-size: 0.69rem; }
 .data-overview-card dd { min-width: 0; overflow-wrap: anywhere; margin: 0; font-size: 0.71rem; font-weight: 780; text-align: right; }
 .data-overview-card button { width: 100%; }
+.data-cleanup-card { padding: 17px; border-color: #e8c5cc; }
+.data-cleanup-card h3 { margin: 2px 0 5px; font-size: 1rem; }
+.cleanup-intro { color: var(--muted); font-size: 0.66rem; line-height: 1.55; }
+.data-cleanup-card > section { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 12px 0; border-bottom: 1px solid #e8edef; }
+.data-cleanup-card > section div { min-width: 0; }
+.data-cleanup-card > section strong, .data-cleanup-card > section small { display: block; }
+.data-cleanup-card > section strong { font-size: 0.72rem; }
+.data-cleanup-card > section small { margin-top: 3px; color: var(--muted); font-size: 0.61rem; line-height: 1.45; }
+.data-cleanup-card > section button { min-height: 36px; padding: 0 10px; color: var(--teal-dark); background: #fff; border: 1px solid #afd0ca; font-size: 0.67rem; font-weight: 760; }
+.data-cleanup-card > section .danger-outline { color: var(--red); border-color: #e7b7c0; }
+.data-cleanup-card > section .danger-outline:hover { background: var(--red-soft); border-color: var(--red); }
+.data-cleanup-card > section button:disabled { color: #8d9da1; background: #f1f4f5; border-color: #dce4e6; }
+.data-cleanup-card .cleanup-refresh { width: 100%; margin-top: 12px; }
+.cleanup-dialog-body { display: grid; gap: 14px; padding: 20px; }
+.cleanup-dialog-body > strong { font-size: 0.95rem; }
+.cleanup-dialog-body > p { color: var(--muted); font-size: 0.72rem; line-height: 1.6; }
+.cleanup-dialog-body dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.cleanup-dialog-body dl div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 11px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.cleanup-dialog-body dt { color: var(--muted); font-size: 0.67rem; }
+.cleanup-dialog-body dd { margin: 0; font-size: 0.69rem; font-weight: 800; }
+.cleanup-dialog-body code { color: var(--red-dark); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.cleanup-dialog-body label, .delete-device-details label { display: grid; gap: 6px; color: var(--ink-soft); font-size: 0.7rem; }
+.delete-device-details label { margin-top: 16px; }
 .boundary-card { padding: 15px; color: #174c47; border: 1px solid #c0ddd7; border-radius: 13px; background: var(--teal-soft); }
 .boundary-card strong { font-size: 0.77rem; }
 .boundary-card p { margin-top: 5px; font-size: 0.68rem; line-height: 1.62; }
@@ -921,3 +947,29 @@ tbody tr:hover { background: #f7fbfb; }
 #ipChangePreview { overflow-wrap:anywhere; }
 .discovered-ip-choice { grid-column:1/-1; padding:10px; background:#fff4d8; border-radius:8px; }
 .discovered-ip-choice p { margin:0 0 6px; }
+
+.diagnostics-dialog {width:min(1050px,calc(100vw - 32px));max-height:88vh;padding:24px;overflow:auto;}
+.diagnostics-dialog>header,.diagnostics-dialog>footer {display:flex;justify-content:space-between;align-items:center;gap:12px;}
+.diagnostics-dialog h2 {margin:0;}
+.diagnostics-help {color:var(--muted,#667d87);font-size:13px;line-height:1.6;}
+.diagnostics-filters {display:flex;align-items:end;flex-wrap:wrap;gap:12px;margin:20px 0;}
+.diagnostics-filters label {display:grid;gap:6px;font-size:13px;}
+.diagnostics-search {flex:1;min-width:180px;}
+.diagnostics-filters input,.diagnostics-filters select {width:100%;min-height:40px;}
+.diagnostics-results {display:grid;gap:10px;margin:16px 0;}
+.diagnostic-entry {padding:14px;background:#f5f8fa;border:1px solid #e0e9ee;border-radius:10px;min-width:0;}
+.diagnostic-entry header {display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:12px;}
+.diagnostic-entry pre {white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:12px/1.65 ui-monospace,monospace;}
+.diagnostic-entry small {color:#657b86;font-size:11px;}
+.diagnostic-level {color:#12665f;}.diagnostic-level.error {color:#b42441;}
+@media(max-width:600px){.diagnostics-dialog{padding:16px}.diagnostics-filters label{width:100%}.diagnostics-filters button{width:100%}}
+
+.diagnostics-dialog>header>div{min-width:0;overflow-wrap:anywhere}.diagnostics-dialog>header>button{flex-shrink:0;white-space:nowrap}
+
+.collector-connection-help { margin: 10px 0; font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+.collector-node-metrics .collector-device-status dd { white-space: normal; overflow: visible; overflow-wrap: anywhere; line-height: 1.6; }
+
+.collector-update-summary { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; margin-top: 12px; padding: 10px; background: var(--paper-soft); border-radius: 8px; font-size: 12px; line-height: 1.6; }
+.collector-update-summary small { color: var(--muted); }
+@media (max-width: 640px) { .collector-node-metrics .collector-device-status { grid-column: 1 / -1; } }

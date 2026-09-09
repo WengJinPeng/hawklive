@@ -623,6 +623,34 @@ class MonitoringServiceTests(unittest.TestCase):
             self.service.stop()
 
     @patch("monitoring_service.Dcp8001TcpClient")
+    def test_diagnostics_summarize_failures_and_record_recovery(self, client_type):
+        room = self.service.configuration()[0]
+        device = room["devices"][0]
+        self.service.options.demo = False
+        client = client_type.return_value
+        client.diagnostic_stage = "initial_settle"
+        client.request_sent = False
+        client.read_realtime.side_effect = ConnectionError("Socket closed while waiting for initial Modbus TCP data")
+        self.service._poll_device(room, device)
+        self.service._poll_device(room, device)
+        failures = [message for _level, event, message in self.logs if event == "device_offline"]
+        self.assertEqual(len(failures), 1)
+        self.assertIn("stage=initial_settle request_sent=False", failures[0])
+        self.assertIn("endpoint=", failures[0])
+        self.assertEqual(self.service._device_failures[device["id"]], 2)
+        client.read_realtime.side_effect = None
+        client.read_realtime.return_value = self.reading(time.time(), 500)
+        self.service._poll_device(room, device)
+        recovered = [message for _level, event, message in self.logs if event == "device_recovered"]
+        self.assertEqual(len(recovered), 1)
+        self.assertIn("recovered_after_failures=2", recovered[0])
+        self.assertTrue(self.service.latest[device["id"]]["online"])
+        self.service._device_failures[device["id"]] = 1
+        self.service.add_log = MagicMock(side_effect=OSError("log disk unavailable"))
+        self.service._poll_device(room, device)
+        self.assertTrue(self.service.latest[device["id"]]["online"])
+
+    @patch("monitoring_service.Dcp8001TcpClient")
     def test_monitor_reuses_device_connection_until_endpoint_changes(self, client_type) -> None:
         first_client = MagicMock()
         second_client = MagicMock()

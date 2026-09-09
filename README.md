@@ -239,15 +239,30 @@ Unset `DCP_DEMO_MODE` (or set it to `0`) before installation on a real site.
 Runtime defaults:
 
 - Device polling and alarm evaluation: every 10 seconds.
-- Up to 8 devices are polled concurrently; offline devices back off progressively
-  up to 300 seconds so one failed device does not block the rest.
+- Up to 8 devices are polled concurrently; each completed worker can schedule its
+  next device without waiting for slow peers. Failed connections are closed and
+  retried after 2, 4, 8, then at most 10 seconds by default (plus I/O time).
 - A collector accepts up to 100 active devices by default. Override the bounded
   worker and capacity settings with `DCP_POLL_WORKERS`,
   `DCP_OFFLINE_BACKOFF_MAX`, and `DCP_MAX_ACTIVE_DEVICES`.
 - Browser refresh: every 10 seconds.
 - Normal historical snapshot: every 120 seconds.
+- A detected device outage also saves the last successfully received sample,
+  and the first recovered sample is saved immediately. Both retain their actual
+  reading timestamps and use the existing durable cloud upload queue.
 - Alarm activation: 5 continuous minutes outside a configured limit.
 - Alarm clearing: 5 continuous minutes back inside all configured limits.
+
+Wi-Fi recovery is automatic while the same configured endpoint becomes available
+again. Each complete TCP sample has a deadline of twice `DCP_DEVICE_TIMEOUT`
+plus the initial connection settle period; individual register requests also
+retain their own timeout. Removed/disabled registrations release cached sockets.
+Existing installations that explicitly set `DCP_OFFLINE_BACKOFF_MAX=300` must
+change that override to `10` to use the faster recovery policy.
+
+The upload queue can replay readings already saved on the collector. It cannot
+reconstruct measurements that were never received while the device was offline;
+the current protocol integration has no confirmed device-history replay API.
 
 ## Customer Login
 
@@ -562,3 +577,76 @@ Default demo grouping:
 Excel exports use the selected time range, selected devices, and interface
 language. They include a localized summary worksheet plus one worksheet per
 selected cleanroom.
+
+### Remote collector diagnostics (source version 0.5.3)
+
+After updating **both** the cloud application and the Windows collector, customer
+administrators can open **场所设备 → 采集器节点 → 诊断日志**. The screen filters by
+cloud receive time (1 hour to 30 days), level and device IP/name/error keyword.
+It pages through older entries and exports only the currently loaded filtered
+results as JSON. Device occurrence time and cloud receive time are displayed
+separately so clock skew or offline replay cannot make old data look current.
+
+- A separate worker posts up to 100 immutable log records to
+  `/api/v1/edge/diagnostics/batch` every 30 seconds (2 seconds while draining).
+  Failed or incomplete acknowledgements retain the same UUIDs for retry across
+  process restarts. The server deduplicates by customer, site and record UUID.
+  Logging network failures do not block measurement, heartbeat or other uploads.
+- Logs are captured only after the collector has obtained its customer identity.
+  Pre-enrollment logs and existing historical local logs are **not** bulk uploaded.
+  Capture-time customer/site/instance binding prevents re-enrollment from uploading
+  a previous customer's queued history under a new identity.
+- The existing local operational log and diagnostic queue each retain at most
+  7 days / 20,000 entries. Oldest **diagnostic** entries may expire even when not
+  uploaded; measurement/history and audit records are not affected. The five-minute
+  `collector_snapshot` reports `logs_discarded_total` so a gap is not mistaken for
+  a complete log history. Cloud ingestion prunes its node to 30 days / 50,000 entries
+  on the next batch; queries always exclude entries beyond the chosen receive window.
+- First/changed device failures are logged immediately; identical repeated failures
+  are summarized at five-minute intervals, and recovery logs include total failed
+  attempts. Details include device ID, endpoint, elapsed time, retry delay and
+  `stage`: `connect`, `initial_settle`, `send_request`, `response_header`,
+  `response_body`, or `response_validated`. `request_sent=False` means no request
+  was sent for that transaction; `None` means transmission outcome is uncertain;
+  `True` means the OS accepted the request bytes, not that the device processed them.
+- Snapshots include effective polling/history intervals, running state, version,
+  applied configuration and storage state. No register writes or measurement
+  frequency changes are introduced by diagnostics.
+- Messages are redacted before storage/upload and again at cloud ingestion;
+  recognized credentials, authorization, cookies and URL query strings are removed.
+  No complete configuration, raw protocol packets or business database is uploaded.
+  This is operational logging, not a general arbitrary-file upload interface.
+- Cloud querying requires the existing customer's administrator role; viewer
+  accounts and other tenants cannot read these logs. No cross-customer engineer
+  superuser or remote command execution capability is added.
+
+Validation: `python3 -m unittest test_collector_diagnostics test_monitoring -q`.
+For real PostgreSQL API/permission tests, set `DCP_DIAGNOSTICS_TEST_DATABASE_URL`
+to an isolated database whose name is exactly `diagnosticsqa`. Tests do not use
+production configuration. Building or deploying the cloud does not upgrade a
+previously installed Windows EXE; that requires a separate Windows build/update.
+
+### Collector and device connection states
+
+The cloud collector badge uses server-received heartbeats (90-second window), independently of device failures, disk warnings, and configuration errors. Device communication has three states: online after a successful real read, offline after a failed check, and unknown without valid evidence. The collector reports individual checks in its heartbeat; checks expire relative to the configured polling interval/reconnect backoff, and a stopped monitor invalidates cached results. Expired collector heartbeats turn device states unknown, not offline. Older collectors with counts only remain supported, but missing successful reads are unconfirmed rather than evidence of a failed connection. Measurement freshness remains a separate status. Local topology indicates the running local collector process separately from its monitoring service.
+
+This requires deploying the updated cloud and installing the updated collector to obtain individual device checks; existing Windows 0.3.0 installations do not gain this capability from a cloud-only update.
+
+### Windows automatic updates (0.6.0)
+
+Cloud Devices now shows **collector connection**, **device communication**, and **automatic update status** separately. Heartbeats report the installed version, update stage, most recent check, failure/rollback, and supported update capability. Old collectors are explicitly labelled as requiring a one-time upgrade.
+
+Install 0.6.0 once using the customer Windows package. The machine-start task runs a stable supervisor from `Program Files`, which starts exactly one real collector worker. Windows Job Object containment prevents orphan workers when the task is stopped. Collection configuration, instance identity, SQLite history/WAL and the pending-upload queue remain in the same `ProgramData` directory. Portable/demo/source-service installations do not claim automatic-update support.
+
+After startup the supervisor checks the configured HTTPS cloud after one minute, then hourly. Downloads run while collection continues. A release must have a trusted Ed25519 signature, supported protocol, unexpired metadata, a higher semantic version, and matching SHA-256 and byte length; cross-origin redirects and plaintext URLs are rejected. Low free disk space postpones the update without deleting data. The worker stops cleanly before a staged EXE replaces it. A separate random startup nonce and matching application version must pass local health checks for 30 seconds within a 120-second startup window. If startup fails, the previous EXE is restored. An interrupted switch is recovered before starting a worker at next boot; a failed version is blocked until a newer release. The last previous EXE is retained. Restart briefly pauses polling; no claim of uninterrupted sampling is made.
+
+Release publication is an operations action, not a customer-supplied executable or remote-command interface:
+
+1. Build on Windows with `build-windows-exe.ps1`, then verify real installed startup, update, rollback, single-instance behavior and retained data on a Windows test machine.
+2. All automatically distributed releases must retain backward compatibility with the previous SQLite schema and updater protocol. Schema-destructive migrations are not eligible for this update channel. The stable bootstrap itself is versioned separately; incompatible bootstrap/protocol changes require an explicitly planned bootstrap upgrade.
+3. Run `python publish_collector_update.py --exe release/HawkHive-DPC8001-Collector.exe --version 0.6.0 --key /secure/offline/update-signing-2026.pem --output release/updates`. The key must match the public key embedded in `update_protocol.py`; never put the private signing key in source, installers, the cloud image or customer packages.
+4. Publish the immutable digest-named EXE first and `stable.json` last. The cloud reads `release/updates` (override with `DCP_COLLECTOR_UPDATE_DIR`). Retain prior immutable EXEs for in-flight downloads. Until a Windows-tested signed release is published, `/api/v1/collector-updates/stable` reports `available:false` and collectors keep running their current version. Re-sign the release before its maximum 90-day expiry if it remains the current release.
+
+The first signing key was generated at `~/.config/hawkhive/update-signing-2026.pem` on the release operator's computer; only its public verification key is included in this repository. Back it up using the operator's normal credential storage. Automatic distribution must remain unavailable until actual Windows acceptance is complete; Python and simulated process tests alone do not verify Windows file locking, Task Scheduler or PyInstaller child processes.
+
+Implementation references: [PyInstaller process restart guidance](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html) and [Ed25519 signing and verification](https://cryptography.io/en/latest/hazmat/primitives/asymmetric/ed25519/).

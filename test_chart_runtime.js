@@ -54,6 +54,16 @@ test('all six canvas charts share a chronological axis and actual point units',(
   e.run('bindChartInspector(canvas,[])');assert.equal(tooltip.hidden,true);
  }
 });
+test('English canvas tooltips translate the derived PCS/28.3 L unit',()=>{
+ const e=environment('app.js');
+ e.context.window.HawkI18n={locale:()=> 'en-US',t:(value)=>value==='PCS/28.3 L（约等于 particles/ft³）'?'PCS/28.3 L (approximately particles/ft³)':String(value)};
+ const canvas=e.document.getElementById('trendCanvas');canvas.parentElement=e.document.createElement();e.context.canvas=canvas;
+ e.run('drawChart(canvas,[{name:"Device",color:"red",room:{id:"a"},rows:[{timestamp:100,particles:{pm_0_5_um:1},particle_unit_label:"PCS/28.3L"}]}],"pm_0_5_um",[],document.getElementById("summary"))');
+ canvas.events.focus();
+ const tooltip=canvas.parentElement.children[0];
+ assert.match(tooltip.textContent,/approximately particles\/ft³/);
+ assert.doesNotMatch(tooltip.textContent,/[\u3400-\u9fff]/);
+});
 test('single canvas point stays left with one real timestamp label',()=>{
  const e=environment('app.js');const canvas=e.document.getElementById('trendCanvas');canvas.parentElement=e.document.createElement();e.context.canvas=canvas;
  e.run('drawChart(canvas,[{name:"A",color:"red",room:{id:"a"},rows:[{timestamp:100,particles:{pm_0_5_um:1}}]}],"pm_0_5_um",[],document.getElementById("summary"))');assert.equal(canvas._inspectionPoints[0].x,62);

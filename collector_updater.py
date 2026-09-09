@@ -319,7 +319,10 @@ def run_supervisor(data_dir: Path, port: int) -> int:
     lock = SingleInstanceLock(install_dir/'supervisor.lock')
     lock.acquire()
     try:
-        Supervisor(install_dir,data_dir,port).run()
+        from windows_power import SystemSleepInhibitor
+        # Retain wakefulness while the worker is stopped for an update/recovery.
+        with SystemSleepInhibitor():
+            Supervisor(install_dir,data_dir,port).run()
     finally:
         lock.release()
     return 0

@@ -32,6 +32,8 @@ class FrozenWindowsUpdateTests(unittest.TestCase):
         with patch('collector_updater.HEALTH_STABLE_SECONDS',2):
             self.assertTrue(self.supervisor.healthy_trial(COLLECTOR_VERSION),'Real frozen collector must start with matching nonce and healthy storage')
         self.supervisor.current=COLLECTOR_VERSION
+        self.assertEqual(self.supervisor.health()['sleep_prevention'],
+                         {'state': 'active', 'system_required': True})
 
     def cleanup_worker(self):
         if self.supervisor.child:
@@ -107,6 +109,10 @@ open(sys.argv[1],'w').write(str(child.pid))
                 except (OSError,ValueError):pass
                 time.sleep(2)
             self.assertTrue(healthy,'Installed SYSTEM task must run a healthy supervised collector')
+            self.assertTrue(result['data']['sleep_prevention']['system_required'])
+            requests = subprocess.check_output(['powercfg.exe', '/requests']).replace(b'\x00', b'').lower()
+            self.assertIn(b'hawkhive-dpc8001-collector.exe', requests)
+            self.assertIn(b'hawkhive-collector-supervisor.exe', requests)
             xml=subprocess.check_output(['schtasks.exe','/Query','/TN',windows_install.TASK_NAME,'/XML'],text=True)
             self.assertIn('HawkHive-Collector-Supervisor.exe',xml)
             self.assertIn('--supervise',xml)
@@ -114,6 +120,9 @@ open(sys.argv[1],'w').write(str(child.pid))
             windows_install.run_checked(['schtasks.exe','/End','/TN',windows_install.TASK_NAME])
             time.sleep(3)
             with self.assertRaises(OSError):opener.open('http://127.0.0.1:8787/api/health',timeout=2)
+            requests = subprocess.check_output(['powercfg.exe', '/requests']).replace(b'\x00', b'').lower()
+            self.assertNotIn(b'hawkhive-dpc8001-collector.exe', requests)
+            self.assertNotIn(b'hawkhive-collector-supervisor.exe', requests)
         finally:
             if installed or install_dir.exists():
                 windows_install.run_checked(['schtasks.exe','/End','/TN',windows_install.TASK_NAME],allow_failure=True)

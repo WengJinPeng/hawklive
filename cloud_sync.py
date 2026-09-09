@@ -19,7 +19,7 @@ from uuid import UUID, uuid4
 from device_discovery import scan_modbus_networks
 from collector_diagnostics import init_queue, enqueue, prune_queue, redact, diagnostic_scope
 
-COLLECTOR_VERSION = "0.6.1"
+COLLECTOR_VERSION = "0.6.2"
 
 
 def canonical_uuid(value: object) -> str:
@@ -847,7 +847,7 @@ class CloudSyncService:
             # Allowlist only operational values; no full config, token or database.
             snapshot = {key: context.get(key) for key in (
                 "monitor_running", "poll_seconds", "record_seconds", "device_total",
-                "device_online", "last_reading_at",
+                "device_online", "last_reading_at", "sleep_prevention",
             )}
             storage = context.get("storage") or {}
             snapshot["last_error"] = redact(context.get("last_error") or "", (self.token,))

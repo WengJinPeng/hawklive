@@ -658,7 +658,30 @@ Release publication is an operations action, not a customer-supplied executable 
 1. Build on Windows with `build-windows-exe.ps1`, then verify real installed startup, update, rollback, single-instance behavior and retained data on a Windows test machine.
 2. All automatically distributed releases must retain backward compatibility with the previous SQLite schema and updater protocol. Schema-destructive migrations are not eligible for this update channel. The stable bootstrap itself is versioned separately; incompatible bootstrap/protocol changes require an explicitly planned bootstrap upgrade.
 3. Run `python publish_collector_update.py --exe release/HawkHive-DPC8001-Collector.exe --version 0.6.0 --key /secure/offline/update-signing-2026.pem --output release/updates`. The key must match the public key embedded in `update_protocol.py`; never put the private signing key in source, installers, the cloud image or customer packages.
-4. Publish the immutable digest-named EXE first and `stable.json` last. The cloud reads `release/updates` (override with `DCP_COLLECTOR_UPDATE_DIR`). Retain prior immutable EXEs for in-flight downloads. Until a Windows-tested signed release is published, `/api/v1/collector-updates/stable` reports `available:false` and collectors keep running their current version. Re-sign the release before its maximum 90-day expiry if it remains the current release.
+4. Publish the immutable digest-named EXE first and `stable.json` last. The cloud reads `release/updates` (override with `DCP_COLLECTOR_UPDATE_DIR`). Retain prior immutable EXEs for in-flight downloads, including inside a replacement Docker image (the source ZIP includes only its current signed release). Until a Windows-tested signed release is published, `/api/v1/collector-updates/stable` reports `available:false` and collectors keep running their current version. Re-sign the release before its maximum 90-day expiry if it remains the current release.
+
+### Windows automatic sleep prevention (0.6.2+)
+
+The running collector requests `ES_CONTINUOUS | ES_SYSTEM_REQUIRED` through
+Windows `SetThreadExecutionState`. This covers portable, managed-worker and
+service entry points. Newly installed supervisors also hold a request while
+replacing/restarting their worker. Existing supervisors do not replace themselves
+on a worker update, but the updated worker holds its own request during collection.
+
+The display can still turn off. Exiting the collector releases its request and
+preserves the previous thread execution state; no power-plan, registry, hibernate,
+lid or battery setting is changed. Windows also removes the request when its
+owning thread/process exits. API failure is logged and does not stop collection.
+Local `/api/health` and uploaded `collector_snapshot` diagnostics include
+`sleep_prevention.state` (`active`, `failed`, `inactive` or `unsupported`) and
+`system_required`. `active` means Windows accepted the request, not proof that
+every hardware/administrator policy will honor it.
+
+This targets **automatic idle sleep**. It does not promise to prevent manual
+Sleep/Hibernate, lid-close actions, critical-battery shutdown, administrator
+request overrides or Modern Standby restrictions on battery power. Keep a
+continuous collection PC connected to mains power. See
+[Microsoft's execution-state API documentation](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate).
 
 The first signing key was generated at `~/.config/hawkhive/update-signing-2026.pem` on the release operator's computer; only its public verification key is included in this repository. Back it up using the operator's normal credential storage. Automatic distribution must remain unavailable until actual Windows acceptance is complete; Python and simulated process tests alone do not verify Windows file locking, Task Scheduler or PyInstaller child processes.
 

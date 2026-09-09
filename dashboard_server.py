@@ -52,6 +52,9 @@ from report_i18n import (
 from runtime_paths import migrate_legacy_runtime_data, runtime_paths
 from single_instance import AlreadyRunningError, MachineInstanceLock, SingleInstanceLock
 from storage_maintenance import LocalStorageManager
+from windows_power import SystemSleepInhibitor
+
+POWER_GUARD: SystemSleepInhibitor | None = None
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / "public"
@@ -111,6 +114,7 @@ def collector_runtime_snapshot() -> dict[str, object]:
     ]
     errors = [str(item.get("error")) for item in latest if item.get("error")]
     return {
+        "sleep_prevention": POWER_GUARD.status() if POWER_GUARD else {"state": "inactive", "system_required": False},
         "update_status": read_json(RUNTIME_PATHS.data_dir / "collector-update-status.json") if os.environ.get("DCP_SUPERVISOR_NONCE") else {"enabled": False, "state": "manual_upgrade_required"},
         "monitor_running": running,
         "poll_seconds": MONITOR.options.poll_seconds if MONITOR else None,
@@ -756,6 +760,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "ok": monitor_running and storage.get("state") != "critical",
                 "data": {
                     "version": COLLECTOR_VERSION,
+                    "sleep_prevention": POWER_GUARD.status() if POWER_GUARD else {"state": "inactive", "system_required": False},
                     "supervisor_nonce": os.environ.get("DCP_SUPERVISOR_NONCE"),
                     "monitor_running": monitor_running,
                     "storage_state": storage.get("state"),
@@ -1643,6 +1648,17 @@ def request_shutdown() -> None:
 
 
 def run_collector(bind: str = "127.0.0.1", port: int = 8787) -> int:
+    global POWER_GUARD
+    # Service, managed EXE and portable entry points all use this lifetime.
+    with SystemSleepInhibitor() as guard:
+        POWER_GUARD = guard
+        try:
+            return _run_collector(bind, port)
+        finally:
+            POWER_GUARD = None
+
+
+def _run_collector(bind: str, port: int) -> int:
     global MONITOR, AUTH, CLOUD_SYNC, HTTP_SERVER, STORAGE
     machine_lock = MachineInstanceLock()
     machine_lock.acquire()
@@ -1678,6 +1694,9 @@ def run_collector(bind: str = "127.0.0.1", port: int = 8787) -> int:
         STORAGE.start()
         if CLOUD_SYNC:
             CLOUD_SYNC.start()
+        if POWER_GUARD and POWER_GUARD.state != "unsupported":
+            add_log("INFO" if POWER_GUARD.state == "active" else "WARNING",
+                    "sleep_prevention", json.dumps(POWER_GUARD.status()))
         print(f"HawkHive Cleanroom Monitoring: http://{bind}:{port}")
         print(f"Runtime data: {RUNTIME_PATHS.data_dir}")
         configured_devices = [

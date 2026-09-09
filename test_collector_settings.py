@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,7 +26,10 @@ class CollectorSettingsTests(unittest.TestCase):
             payload = json.loads(path.read_text())
             self.assertEqual(payload["cloud_url"], "https://dashboard.example.com")
             self.assertNotIn("token", payload)
-            self.assertEqual(payload["token_protection"], "plaintext-v1")
+            self.assertEqual(payload["token_protection"],
+                             "windows-dpapi-machine-v1" if os.name == "nt" else "plaintext-v1")
+            if os.name == "nt":
+                self.assertNotIn(expected.token, path.read_text())
 
     def test_public_dict_never_returns_token(self) -> None:
         settings = validate_settings("https://example.com", "site-001", "secret" * 5)

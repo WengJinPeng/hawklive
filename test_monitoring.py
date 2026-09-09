@@ -4,6 +4,7 @@ import ipaddress
 import json
 import os
 import sqlite3
+from contextlib import closing
 import tempfile
 import threading
 import time
@@ -98,7 +99,7 @@ class ReadingQueryTests(unittest.TestCase):
         init_db()
         service = MonitoringService(self.db_path, lambda _name: {}, lambda *_args: {}, lambda *_args: {})
         service.init_schema()
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db, db:
             for index in range(41):
                 for room_id, room_name, device_id, device_name in (
                     ("room-001", "Workshop 1", "device-001", "Device 1"),
@@ -273,7 +274,7 @@ class MonitoringServiceTests(unittest.TestCase):
     def test_physical_mode_bootstrap_does_not_create_a_phantom_device(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "physical.sqlite3"
-            with sqlite3.connect(db_path) as db:
+            with closing(sqlite3.connect(db_path)) as db, db:
                 db.execute(
                     "CREATE TABLE readings (id INTEGER PRIMARY KEY, cleanroom TEXT NOT NULL DEFAULT '', device TEXT NOT NULL DEFAULT '')"
                 )
@@ -403,7 +404,7 @@ class MonitoringServiceTests(unittest.TestCase):
 
     def test_alarm_log_write_happens_after_alarm_transaction_commits(self) -> None:
         def write_log(_level: str, event: str, _message: str) -> None:
-            with sqlite3.connect(self.db_path, timeout=0.1) as db:
+            with closing(sqlite3.connect(self.db_path, timeout=0.1)) as db, db:
                 db.execute("CREATE TABLE IF NOT EXISTS callback_logs(event TEXT NOT NULL)")
                 db.execute("INSERT INTO callback_logs(event) VALUES (?)", (event,))
 
@@ -411,7 +412,7 @@ class MonitoringServiceTests(unittest.TestCase):
         self.service._evaluate_alarms(self.reading(1000, 120000), self.limits)
         self.service._evaluate_alarms(self.reading(1300, 120000), self.limits)
 
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db, db:
             events = [row[0] for row in db.execute("SELECT event FROM callback_logs")]
         self.assertEqual(events, ["alarm_started"])
 
@@ -1073,7 +1074,7 @@ class CloudSyncTests(unittest.TestCase):
         )
 
     def test_particle_unit_and_protocol_profile_are_uploaded_when_present(self) -> None:
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db, db:
             db.execute("ALTER TABLE readings ADD COLUMN particle_unit_code INTEGER")
             db.execute("ALTER TABLE readings ADD COLUMN particle_unit_label TEXT")
             db.execute("ALTER TABLE readings ADD COLUMN protocol_profile TEXT")
@@ -1230,7 +1231,7 @@ class CloudSyncTests(unittest.TestCase):
         self.assertEqual(service.pending_count(), 1)
 
     def test_demo_readings_never_enter_cloud_channels(self) -> None:
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db, db:
             db.execute(
                 """
                 INSERT INTO readings(record_uuid, customer_id, site_id, cleanroom_id, cleanroom,
@@ -1266,13 +1267,13 @@ class CloudSyncTests(unittest.TestCase):
         self.assertEqual(len(self.received), 1)
         self.assertEqual(self.received[0]["readings"][0]["source"], "device")
         self.assertEqual(self.received[0]["readings"][0]["site_id"], "site-001")
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db, db:
             self.assertIsNone(
                 db.execute("SELECT synced_at FROM readings WHERE site_id='old-site'").fetchone()[0]
             )
 
     def test_invalid_reading_isolated_then_quarantined_without_blocking_good_data(self) -> None:
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db, db:
             db.execute(
                 """
                 INSERT INTO readings(record_uuid, customer_id, site_id, cleanroom_id, cleanroom,
@@ -1301,7 +1302,7 @@ class CloudSyncTests(unittest.TestCase):
         self.assertEqual(service.sync_once(), 0)
         self.assertEqual(service.pending_count(), 0)
         self.assertEqual(service.quarantined_count(), 1)
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db, db:
             attempts, quarantined_at = db.execute(
                 "SELECT sync_attempts, sync_quarantined_at FROM readings WHERE device_id='bad-device'"
             ).fetchone()
@@ -1317,7 +1318,7 @@ class CloudSyncTests(unittest.TestCase):
         self.assertEqual(status["unassigned_uploads"], 1)
 
     def test_temporary_cloud_failure_does_not_quarantine_or_consume_item_retries(self) -> None:
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db, db:
             db.execute(
                 """
                 INSERT INTO readings(record_uuid, customer_id, site_id, cleanroom_id, cleanroom,
@@ -1340,7 +1341,7 @@ class CloudSyncTests(unittest.TestCase):
 
         with self.assertRaises(urllib.error.HTTPError):
             service.sync_once()
-        with sqlite3.connect(self.db_path) as db:
+        with closing(sqlite3.connect(self.db_path)) as db, db:
             rows = db.execute(
                 """SELECT sync_attempts, sync_quarantined_at, sync_error FROM readings
                    WHERE site_id='site-001'"""

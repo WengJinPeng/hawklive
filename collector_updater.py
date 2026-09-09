@@ -70,7 +70,7 @@ class UpdateTransaction:
     def switch(self, release: dict, previous_version: str) -> None:
         verify_executable(self.staged, release)
         shutil.copy2(self.exe, self.previous)
-        with self.previous.open("rb") as stream:
+        with self.previous.open("r+b") as stream:
             os.fsync(stream.fileno())
         atomic_json(self.journal, {'target': release['version'], 'previous_version': previous_version})
         # An interrupted transaction (even before this rename) restores the known
@@ -89,7 +89,7 @@ class UpdateTransaction:
             raise RuntimeError('Interrupted update has no rollback executable')
         # Copy then rename preserves rollback if the machine loses power again.
         shutil.copy2(self.previous, self.staged)
-        with self.staged.open("rb") as stream:
+        with self.staged.open("r+b") as stream:
             os.fsync(stream.fileno())
         os.replace(self.staged, self.exe)
         atomic_json(self.installed, {'version': transaction.get('previous_version')})

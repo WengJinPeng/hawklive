@@ -13,12 +13,21 @@ class WindowsInstallTests(unittest.TestCase):
     def test_command_failure_preserves_localized_error_details(self) -> None:
         message = "Windows 安装命令失败"
         encoding = "oem" if os.name == "nt" else "utf-8"
+        try:
+            message.encode(encoding)
+        except UnicodeEncodeError:
+            # English Windows cannot emit Chinese in its OEM code page. Use
+            # that page's non-ASCII characters to exercise the same decoding.
+            message = "Windows command failed: " + bytes(range(128, 256)).decode(
+                encoding, errors="ignore"
+            )
         script = (
             f"import sys; sys.stderr.buffer.write({message!r}.encode({encoding!r})); "
             "sys.exit(7)"
         )
-        with self.assertRaisesRegex(RuntimeError, message):
+        with self.assertRaises(RuntimeError) as raised:
             windows_install.run_checked([sys.executable, "-c", script])
+        self.assertEqual(str(raised.exception), message.strip())
 
     def test_install_paths_use_machine_wide_directories(self) -> None:
         install_dir, data_dir = windows_install.install_paths(

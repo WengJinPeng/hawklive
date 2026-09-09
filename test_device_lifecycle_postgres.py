@@ -44,6 +44,20 @@ class DeviceLifecyclePostgresTests(unittest.TestCase):
                     cleanroom_id=room or self.payload['cleanroom_id'],cleanroom_name='untrusted',device_id=self.device_id,
                     device_name='untrusted',measured_at=stamp or time.time(),source='device',particles={},environment={},alarm_status='normal')
 
+    def test_manual_registration_preserves_nondefault_port_in_edge_configuration(self):
+        payload = dict(self.payload, name='Gateway port 15020', tcp_port=15020)
+        response = self.client.post('/api/admin/devices', json=payload)
+        self.assertEqual(response.status_code, 201, response.text)
+        rooms = cloud_api.edge_configuration_payload({
+            'customer_id': self.user['customer_id'], 'site_id': self.payload['site_id'],
+        })['rooms']
+        device = next(d for room in rooms for d in room['devices'] if d['name'] == payload['name'])
+        self.assertEqual(device['tcpPort'], 15020)
+        # Same IP and slave on a different port is a separate endpoint;
+        # repeating the exact endpoint must still be rejected.
+        self.assertNotEqual(device['id'], self.device_id)
+        self.assertEqual(self.client.post('/api/admin/devices', json=payload).status_code, 409)
+
     def ingest(self, record):
         identity={'customer_id':self.user['customer_id'],'site_id':record['site_id']}
         return cloud_api.ingest_batch(cloud_api.ReadingBatch(site_id=record['site_id'],readings=[dict(record,record_uuid=uuid4())]),identity)

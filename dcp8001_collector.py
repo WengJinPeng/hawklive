@@ -279,10 +279,17 @@ class Dcp8001TcpClient:
         # is standard-compatible and reduces collisions with cached stale frames.
         self.transaction_id = secrets.randbits(16)
         self._first_request = True
+        self.diagnostic_stage = "connected"
+        self.request_sent = False
+        self._read_deadline: float | None = None
         self.sock = socket.create_connection((host, tcp_port), timeout=timeout)
         self.sock.settimeout(timeout)
 
     def close(self) -> None:
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # A disconnected peer still needs the local descriptor closed.
         self.sock.close()
 
     def __enter__(self) -> Dcp8001TcpClient:
@@ -296,6 +303,8 @@ class Dcp8001TcpClient:
         return self.transaction_id
 
     def _request_pdu(self, pdu: bytes) -> bytes:
+        self.request_sent = False
+        self.diagnostic_stage = "initial_settle"
         if self._first_request:
             self._first_request = False
             self._discard_initial_data()
@@ -308,10 +317,21 @@ class Dcp8001TcpClient:
             + bytes((self.slave,))
         )
         deadline = time.monotonic() + self.timeout
-        self.sock.settimeout(self.timeout)
+        read_deadline = getattr(self, "_read_deadline", None)
+        if read_deadline is not None:
+            deadline = min(deadline, read_deadline)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Timed out reading complete Modbus TCP sample")
+        self.sock.settimeout(remaining)
+        self.diagnostic_stage = "send_request"
+        self.request_sent = None  # sendall failure can mean partially transmitted bytes.
         self.sock.sendall(header + pdu)
+        self.request_sent = True
+        self.diagnostic_stage = "response_header"
         try:
             while True:
+                self.diagnostic_stage = "response_header"
                 response_header = self._recv_exact(7, deadline)
                 rx_transaction_id = int.from_bytes(response_header[0:2], "big")
                 protocol_id = int.from_bytes(response_header[2:4], "big")
@@ -321,6 +341,7 @@ class Dcp8001TcpClient:
                     raise ValueError(f"Unexpected Modbus TCP protocol id: {protocol_id}")
                 if not 2 <= rx_length <= 254:
                     raise ValueError(f"Unexpected Modbus TCP length: {rx_length}")
+                self.diagnostic_stage = "response_body"
                 body = self._recv_exact(rx_length - 1, deadline)
 
                 # Some WiFi adapters leave a response from an older transaction in
@@ -333,6 +354,7 @@ class Dcp8001TcpClient:
                 if body[0] & 0x80:
                     code = body[1] if len(body) > 1 else None
                     raise ValueError(f"Modbus exception response: function=0x{body[0]:02X}, code={code}")
+                self.diagnostic_stage = "response_validated"
                 return body
         finally:
             self.sock.settimeout(self.timeout)
@@ -408,6 +430,15 @@ class Dcp8001TcpClient:
         return validate_particle_unit(self.read_holding_registers(133, 1))
 
     def read_realtime(self) -> Dcp8001Reading:
+        # Fourteen small requests make one sample. Per-request timeouts alone
+        # allow a degraded gateway to occupy a worker for fourteen timeouts.
+        self._read_deadline = time.monotonic() + self.timeout * 2 + self.connect_settle
+        try:
+            return self._read_realtime_sample()
+        finally:
+            self._read_deadline = None
+
+    def _read_realtime_sample(self) -> Dcp8001Reading:
         particle_unit_code, particle_unit_label = self.read_particle_unit()
         # Keep responses small for embedded bridges with limited socket buffers.
         # Each request still contains one complete U32/Float value.

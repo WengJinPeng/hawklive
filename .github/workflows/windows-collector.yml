@@ -1,0 +1,50 @@
+name: Windows collector build and update verification
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, codex/collector-auto-update]
+    paths-ignore:
+      - 'release/**'
+      - '**.md'
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install build and test dependencies
+        run: python -m pip install -r requirements-build-windows.txt -r requirements-cloud.txt 'httpx>=0.27,<1'
+      - name: Verify updater and existing collector contracts
+        run: python -m unittest test_collector_updater test_windows_install test_windows_launcher test_connection_status test_collector_settings test_runtime_foundation test_runtime_migration test_device_recovery test_dcp8001_collector test_monitoring -q
+      - name: Build collector EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --name HawkHive-DPC8001-Collector --distpath release --add-data "public;public" windows_launcher.py
+          if ($LASTEXITCODE -ne 0) { throw 'Collector build failed' }
+          $exe = Join-Path $PWD 'release/HawkHive-DPC8001-Collector.exe'
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Collector version check failed' }
+          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          "$hash  HawkHive-DPC8001-Collector.exe" | Set-Content -Encoding ascii "$exe.sha256"
+      - name: Test real Windows process replacement and rollback
+        env:
+          DCP_UPDATER_ISOLATED_WINDOWS_QA: '1'
+          DCP_UPDATE_TEST_EXE: ${{ github.workspace }}\release\HawkHive-DPC8001-Collector.exe
+        run: python -m unittest test_windows_update_e2e -v
+      - name: Retain verified unsigned build for release signing
+        uses: actions/upload-artifact@v7
+        with:
+          name: hawkhive-collector-windows
+          path: |
+            release/HawkHive-DPC8001-Collector.exe
+            release/HawkHive-DPC8001-Collector.exe.sha256
+          retention-days: 14
+          if-no-files-found: error

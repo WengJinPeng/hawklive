@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
+import sys
 from pathlib import Path
 
 import windows_install
 
 
 class WindowsInstallTests(unittest.TestCase):
+    def test_command_failure_preserves_localized_error_details(self) -> None:
+        message = "Windows 安装命令失败"
+        encoding = "oem" if os.name == "nt" else "utf-8"
+        script = (
+            f"import sys; sys.stderr.buffer.write({message!r}.encode({encoding!r})); "
+            "sys.exit(7)"
+        )
+        with self.assertRaisesRegex(RuntimeError, message):
+            windows_install.run_checked([sys.executable, "-c", script])
+
     def test_install_paths_use_machine_wide_directories(self) -> None:
         install_dir, data_dir = windows_install.install_paths(
             {

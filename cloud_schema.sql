@@ -536,3 +536,20 @@ CREATE TABLE IF NOT EXISTS device_registration_links (
 );
 CREATE INDEX IF NOT EXISTS idx_device_registration_canonical
     ON device_registration_links(customer_id,canonical_device_id);
+
+-- Operational diagnostics are separate from measurement and audit history.
+CREATE TABLE IF NOT EXISTS collector_diagnostic_logs (
+    id bigserial PRIMARY KEY,
+    customer_id text NOT NULL REFERENCES customers(id),
+    site_id text NOT NULL REFERENCES sites(id),
+    record_uuid uuid NOT NULL,
+    instance_id text NOT NULL,
+    measured_at timestamptz NOT NULL,
+    received_at timestamptz NOT NULL DEFAULT now(),
+    level text NOT NULL,
+    event text NOT NULL,
+    message text NOT NULL,
+    UNIQUE(customer_id,site_id,record_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_collector_diagnostics_scope
+    ON collector_diagnostic_logs(customer_id,site_id,id DESC);

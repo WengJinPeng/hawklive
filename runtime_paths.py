@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+
+from collector_activation import INSTALLATION_ID_FILENAME
 
 APP_DIRECTORY = Path(__file__).resolve().parent
 WINDOWS_DATA_SUBDIRECTORY = Path("HawkHive") / "DCP8001"
@@ -69,6 +70,21 @@ def migrate_legacy_runtime_data(
     source_dir = APP_DIRECTORY if app_directory is None else app_directory
     if source_dir.resolve() == paths.data_dir.resolve():
         return []
+    # Existing settings belong to the destination collector. Never combine them
+    # with another collector's legacy database or installation identity.
+    if paths.collector_settings.exists():
+        return []
+    legacy_identity = source_dir / INSTALLATION_ID_FILENAME
+    target_identity = paths.data_dir / INSTALLATION_ID_FILENAME
+    legacy_settings = source_dir / "collector_settings.json"
+    if legacy_identity.exists():
+        identity = legacy_identity.read_text(encoding="ascii").strip()
+        if len(identity) != 32 or any(c not in "0123456789abcdef" for c in identity):
+            raise RuntimeError("Legacy collector installation identity is invalid")
+        if target_identity.exists() and target_identity.read_text(encoding="ascii").strip() != identity:
+            raise RuntimeError("Legacy collector installation identity conflicts with destination")
+    elif legacy_settings.exists() and target_identity.exists():
+        raise RuntimeError("Legacy collector settings have no matching destination installation identity")
     paths.ensure()
     migrated: list[str] = []
     legacy_database = source_dir / "dashboard_data.sqlite3"
@@ -89,8 +105,23 @@ def migrate_legacy_runtime_data(
             if temporary.exists():
                 temporary.unlink()
         migrated.append("dashboard_data.sqlite3")
-    legacy_settings = source_dir / "collector_settings.json"
-    if legacy_settings.exists() and not paths.collector_settings.exists():
-        shutil.copy2(legacy_settings, paths.collector_settings)
-        migrated.append("collector_settings.json")
+    # Publish identity before settings so an interrupted copy can be retried
+    # without making a new machine identity for the migrated cloud credentials.
+    for source, destination in (
+        (legacy_identity, target_identity),
+        (legacy_settings, paths.collector_settings),
+    ):
+        if not source.exists() or destination.exists():
+            continue
+        handle, temporary_name = tempfile.mkstemp(prefix="collector-migration-", dir=paths.data_dir)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(source.read_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        migrated.append(destination.name)
     return migrated

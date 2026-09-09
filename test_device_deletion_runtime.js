@@ -41,6 +41,17 @@ test('opening and cancelling never sends a deletion', () => {
   assert.equal(h.run('rooms[0].devices.length'), 1);
 });
 
+test('reopening topology removes a device deleted by another administrator', async () => {
+  const h = harness();
+  h.run('loadPendingCollectors=async()=>{}');
+  h.context.api = async (url) => {
+    assert.equal(url, '/api/config');
+    return [{id:'room',name:'Workshop',devices:[]}];
+  };
+  await h.run('refreshTopology()');
+  assert.equal(h.run('rooms[0].devices.length'), 0);
+});
+
 test('in-flight deletion blocks repeat submission and dismissal, then removes only target caches', async () => {
   const h = harness();
   let calls = 0;

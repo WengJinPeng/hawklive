@@ -55,7 +55,7 @@ def request_elevated_install(
 def scheduled_task_command(executable: Path, data_dir: Path) -> str:
     return subprocess.list2cmdline(
         [
-            str(executable), "--device", "--no-browser", "--data-dir", str(data_dir),
+            str(executable), "--supervise", "--device", "--no-browser", "--data-dir", str(data_dir),
             "--activation", str(data_dir / ACTIVATION_FILENAME),
             "--enrollment", str(data_dir / ENROLLMENT_FILENAME),
         ]
@@ -65,7 +65,7 @@ def scheduled_task_command(executable: Path, data_dir: Path) -> str:
 def scheduled_task_arguments(data_dir: Path) -> str:
     return subprocess.list2cmdline(
         [
-            "--device", "--no-browser", "--data-dir", str(data_dir),
+            "--supervise", "--device", "--no-browser", "--data-dir", str(data_dir),
             "--activation", str(data_dir / ACTIVATION_FILENAME),
             "--enrollment", str(data_dir / ENROLLMENT_FILENAME),
         ]
@@ -85,7 +85,6 @@ def scheduled_task_xml(executable: Path, data_dir: Path) -> str:
   <Principals>
     <Principal id="System">
       <UserId>S-1-5-18</UserId>
-      <LogonType>ServiceAccount</LogonType>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>
@@ -114,7 +113,12 @@ def scheduled_task_xml(executable: Path, data_dir: Path) -> str:
 
 
 def run_checked(command: list[str], *, allow_failure: bool = False) -> None:
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    # Windows system tools use the console code page even when Python's UTF-8
+    # mode is enabled. Keep their failure details readable on localized hosts.
+    completed = subprocess.run(
+        command, capture_output=True, text=True, check=False,
+        encoding="oem" if os.name == "nt" else "utf-8", errors="replace",
+    )
     if completed.returncode and not allow_failure:
         detail = (completed.stderr or completed.stdout or "command failed").strip()
         raise RuntimeError(detail)
@@ -158,6 +162,8 @@ def install_elevated(
     run_checked(["schtasks.exe", "/End", "/TN", TASK_NAME], allow_failure=True)
     if source_exe.resolve() != installed_exe.resolve():
         copy_executable_with_retry(source_exe, installed_exe)
+    supervisor_exe = install_dir / "HawkHive-Collector-Supervisor.exe"
+    copy_executable_with_retry(source_exe, supervisor_exe)
     if activation_path is not None and activation_path.is_file():
         installed_activation = data_dir / ACTIVATION_FILENAME
         if activation_path.resolve() != installed_activation.resolve():
@@ -173,14 +179,14 @@ def install_elevated(
             shutil.copy2(enrollment_path, installed_enrollment)
     run_checked([
         "icacls.exe", str(data_dir), "/inheritance:r",
-        "/grant:r", "SYSTEM:(OI)(CI)F", "Administrators:(OI)(CI)F",
+        "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F",
     ])
     handle, task_xml_path = tempfile.mkstemp(
         prefix="hawkhive-task-", suffix=".xml", dir=data_dir
     )
     try:
         with os.fdopen(handle, "w", encoding="utf-16", newline="") as stream:
-            stream.write(scheduled_task_xml(installed_exe, data_dir))
+            stream.write(scheduled_task_xml(supervisor_exe, data_dir))
         run_checked([
             "schtasks.exe", "/Create", "/TN", TASK_NAME,
             "/XML", task_xml_path, "/F",

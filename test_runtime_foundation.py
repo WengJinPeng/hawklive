@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import sqlite3
+from contextlib import closing
 import tempfile
 import time
 import unittest
@@ -49,7 +50,7 @@ class RuntimePathTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             target = root / "data"
-            with sqlite3.connect(source / "dashboard_data.sqlite3") as db:
+            with closing(sqlite3.connect(source / "dashboard_data.sqlite3")) as db, db:
                 db.execute("CREATE TABLE proof(value TEXT)")
                 db.execute("INSERT INTO proof(value) VALUES('legacy')")
             (source / "collector_settings.json").write_text("{}", encoding="utf-8")
@@ -57,7 +58,7 @@ class RuntimePathTests(unittest.TestCase):
 
             migrated = migrate_legacy_runtime_data(paths, app_directory=source)
             self.assertEqual(migrated, ["dashboard_data.sqlite3", "collector_settings.json"])
-            with sqlite3.connect(paths.database) as db:
+            with closing(sqlite3.connect(paths.database)) as db, db:
                 self.assertEqual(db.execute("SELECT value FROM proof").fetchone()[0], "legacy")
             paths.collector_settings.write_text('{"current":true}', encoding="utf-8")
             self.assertEqual(migrate_legacy_runtime_data(paths, app_directory=source), [])

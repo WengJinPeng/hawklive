@@ -666,7 +666,7 @@ function renderStatus(status) {
   const cloudLabels = { connected: "云端已连接", attention: "云端需处理", error: "云端连接失败", connecting: "正在连接", stopped: "云端已停止", not_configured: "云端未配置" };
   setHealth(
     "cloudHealth",
-    status.cloud_connected ? "ok" : status.cloud_configured ? "error" : "warning",
+    status.cloud_state === "attention" ? "warning" : status.cloud_connected ? "ok" : status.cloud_configured ? "error" : "warning",
     cloudLabels[status.cloud_state] || "云端状态未知",
     status.site_id || "本机采集不受影响",
   );
@@ -696,6 +696,7 @@ function renderStatus(status) {
   $("siteName").textContent = status.site_id || "尚未配置站点";
   $("lastUpload").textContent = when(status.last_upload_at);
   $("lastReading").textContent = when(status.last_reading_at);
+  $("lastCloudContact").textContent = when(status.last_cloud_contact_at);
   $("cloudHint").textContent = status.cloud_configured
     ? "连接信息和令牌只保存在本机；新记录会自动进入上传队列。"
     : "设备读取成功后再配置远程平台，不影响当前本机采集。";
@@ -718,6 +719,10 @@ function renderStatus(status) {
     setReadiness("error", "需要处理", "真实采集正常，但云端连接失败", "本机数据不会丢失；请检查云端地址、站点编号、令牌和外网连接。", "检查云端", "cloudCard");
   } else if (status.quarantined_uploads || status.unassigned_uploads) {
     setReadiness("error", "需要处理", "部分记录无法正常上传", "隔离或归属异常的记录不会自动出现在远程客户工作台。", "查看诊断", "diagnosticCard");
+  } else if (status.cloud_state === "attention") {
+    setReadiness("warning", "需要处理", "云端部分通道尚未恢复", "已恢复部分通信，请等待其余上传通道恢复或查看诊断日志。", "查看诊断", "diagnosticCard");
+  } else if (freshRealDevices.length < status.device_total) {
+    setReadiness("warning", "需要处理", "部分设备尚未恢复有效读数", `${freshRealDevices.length}/${status.device_total} 台设备正在提供有效读数，请查看其余设备的连接状态。`, "查看设备清单", "deviceSurface");
   } else if (!uploadReady) {
     setReadiness("warning", "上传处理中", "真实采集和云端连接正常", status.pending_uploads ? `还有 ${status.pending_uploads} 条记录等待上传。` : "正在等待首条设备记录上传。", "查看云端", "cloudCard");
   } else {
@@ -726,13 +731,17 @@ function renderStatus(status) {
   updateInventorySummary();
 }
 
-async function loadStatus({ replaceInventory = true } = {}) {
+async function loadStatus({ replaceInventory = true, background = false } = {}) {
+  const canReplace = () => !background || (!dirty && !$("deviceDialog").open);
+  const fetchInventory = replaceInventory && canReplace();
   const [status, config] = await Promise.all([
     api("/api/collector/status"),
-    replaceInventory ? api("/api/collector/config") : Promise.resolve(null),
+    fetchInventory ? api("/api/collector/config") : Promise.resolve(null),
   ]);
   statusCache = status;
-  if (replaceInventory) {
+  // An edit may begin while the background requests are in flight.
+  const applyInventory = fetchInventory && canReplace();
+  if (applyInventory) {
     rooms = hydrateRooms(config);
     deviceTests = {};
     populateRoomSelects();
@@ -741,7 +750,7 @@ async function loadStatus({ replaceInventory = true } = {}) {
   renderDevices();
   renderStatus(status);
   renderCurrentBlocker(recentLogs);
-  if (replaceInventory) setDirty(false);
+  if (applyInventory) setDirty(false);
 }
 
 async function loadCloudSettings() {
@@ -1115,7 +1124,7 @@ window.addEventListener("hawkhive:localechange", () => {
   loadLogs().catch(() => {});
 });
 setInterval(() => {
-  if (!document.hidden) loadStatus({ replaceInventory: false }).catch(() => {});
+  if (!document.hidden) loadStatus({ background: true }).catch(() => {});
 }, 10000);
 
 init();

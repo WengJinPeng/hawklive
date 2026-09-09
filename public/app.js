@@ -70,6 +70,11 @@ let discoveredDevices = [];
 let pendingCollectors = [];
 let deviceToDelete = null;
 let deviceDeleteBusy = false;
+let workshopToDelete = null;
+let workshopDeleteBusy = false;
+let dataCleanupPreview = null;
+let dataCleanupScope = null;
+let dataCleanupBusy = false;
 
 const topologyManagerRoles = new Set(["admin", "customer_admin", "customer"]);
 
@@ -91,7 +96,7 @@ function displayParticleUnit(rows) {
   if (labels.size === 0) return "单位未确认";
   if (labels.size > 1) return "单位不一致";
   const label = [...labels][0];
-  return label === "PCS/28.3L" ? "PCS/28.3 L（约等于 particles/ft³）" : label;
+  return label === "PCS/28.3L" ? uiText("PCS/28.3 L（约等于 particles/ft³）") : label;
 }
 
 function selectedRoom() {
@@ -306,7 +311,15 @@ function friendlyError(message) {
     [/Failed to fetch/i, "无法连接到服务，请确认本机服务仍在运行。"],
     [/NetworkError/i, "网络连接失败，请稍后重试。"],
     [/Administrator permission is required/i, "只有企业管理员可以维护车间和设备。"],
+    [/Primary administrator permission is required/i, "只有当前客户的主管理员可以执行永久删除。"],
     [/Cleanroom name is already in use/i, "这个车间名称已经存在。"],
+    [/Workshop not found/i, "车间不存在，请刷新列表。"],
+    [/Workshop name confirmation does not match/i, "输入的车间名称不匹配。"],
+    [/Delete or move active devices before deleting this workshop/i, "请先移动或删除该车间内的启用设备。"],
+    [/Purge retired-device data before deleting this workshop/i, "该车间仍有已删除设备记录，请先在设置页执行“已删除设备数据”清理。"],
+    [/Clean monitoring data for this workshop before deleting it/i, "该车间仍有监测记录，请先完成相应数据清理。"],
+    [/Type "PURGE RETIRED" to confirm/i, "请输入 PURGE RETIRED 确认永久清理。"],
+    [/Type "PURGE ALL" to confirm/i, "请输入 PURGE ALL 确认永久清理。"],
     [/Device name is already in use/i, "该车间内已经有同名设备。"],
     [/Device not found/i, "设备不存在，请刷新列表。"],
     [/already configured/i, "这个 IP、端口和 Slave ID 已被同一采集器中的其他设备使用。"],
@@ -395,16 +408,18 @@ async function loadTopologySites(force = false) {
   renderTopology();
 }
 
-function collectorNodeState(site) {
-  const needsAttention = site.config_state === "failed"
+function collectorNeedsAttention(site) {
+  return site.config_state === "failed"
     || Number(site.quarantined_uploads || 0) > 0
     || Number(site.unassigned_uploads || 0) > 0
     || ["warning", "attention", "critical"].includes(String(site.storage_state || ""));
-  if (needsAttention) return { key: "attention", label: "需要处理" };
-  if (site.connected) return { key: "online", label: "在线" };
+}
+
+function collectorNodeState(site) {
+  if (site.connected) return { key: "online", label: "采集器在线" };
   if (site.connection_state === "upgrade_required") return { key: "attention", label: "需升级心跳" };
   if (site.connection_state === "awaiting_activation") return { key: "waiting", label: "待激活" };
-  return { key: "offline", label: "离线" };
+  return { key: "offline", label: "采集器离线" };
 }
 
 function collectorConfigLabel(site) {
@@ -428,6 +443,26 @@ function collectorStorageLabel(state) {
   }[state] || "待上报";
 }
 
+function collectorDeviceSummary(site) {
+  if (!site.is_current && !site.connected) return "状态待确认";
+  if (site.monitor_running === false) return "采集服务已停止，状态待确认";
+  const total = Number(site.device_total || 0);
+  if (!total) return "尚未上报设备";
+  const online = Number(site.device_online || 0);
+  const offline = Number(site.device_offline || 0);
+  const unknown = site.device_unknown == null ? total - online - offline : Number(site.device_unknown);
+  return `${uiText("在线")} ${online} · ${uiText("离线")} ${offline} · ${uiText("待确认")} ${unknown}`;
+}
+
+function collectorUpdateLabel(site) {
+  const update = site.update_status;
+  if (!update?.enabled) return "需首次升级以启用自动更新";
+  const labels = {starting: "正在启动", restarting: "正在重启", idle: "自动更新已启用", checking: "正在检查更新",
+    available: "有可用更新", downloading: "正在下载更新", installing: "正在安装并验证", updated: "更新成功",
+    up_to_date: "已是最新版本", failed: "更新失败，将自动重试", rolled_back: "更新失败，已回退旧版"};
+  return labels[update.state] || "等待更新状态";
+}
+
 function renderCollectorNodes() {
   if (!$("collectorNodeList")) return;
   const onlineCount = topologySites.filter((site) => site.connected).length;
@@ -441,18 +476,21 @@ function renderCollectorNodes() {
     return `<article class="collector-node-card ${state.key}">
       <div class="collector-node-head">
         <div class="collector-node-identity"><span class="collector-node-glyph" aria-hidden="true">采</span><div><strong data-i18n-ignore>${escapeHtml(collectorDisplayName(site))}</strong><small data-i18n-ignore>${escapeHtml(identity || site.id)}</small></div></div>
-        <div class="collector-tags">${site.is_current ? '<span class="collector-tag current">本机</span>' : '<span class="collector-tag">远程</span>'}<span class="collector-tag ${state.key}">${state.label}</span></div>
+        <div class="collector-tags">${site.is_current ? '<span class="collector-tag current">本机</span>' : '<span class="collector-tag">远程</span>'}<span class="collector-tag ${state.key}">${state.label}</span>${collectorNeedsAttention(site) ? '<span class="collector-tag attention">需要处理</span>' : ""}</div>
       </div>
       <dl class="collector-node-metrics">
-        <div><dt>设备在线</dt><dd>${Number(site.device_online || 0)} / ${Number(site.device_total || 0)}</dd></div>
+        <div class="collector-device-status"><dt>设备通信</dt><dd>${escapeHtml(collectorDeviceSummary(site))}</dd></div>
         <div><dt>配置状态</dt><dd>${escapeHtml(collectorConfigLabel(site))}</dd></div>
         <div><dt>待上传</dt><dd>${formatNumber(queueCount, 0)} 条</dd></div>
         <div><dt>最后采集</dt><dd>${site.last_reading_at ? relativeTime(site.last_reading_at) : "尚无真实数据"}</dd></div>
         <div><dt>本地存储</dt><dd>${escapeHtml(collectorStorageLabel(site.storage_state))}</dd></div>
         <div><dt>磁盘可用</dt><dd>${formatBytes(site.disk_free_bytes)}</dd></div>
       </dl>
+      <div class="collector-update-summary"><strong>自动更新</strong><span>${escapeHtml(uiText(collectorUpdateLabel(site)))}</span>${topologyCapabilities.collector_update?.version ? `<small><span>可用版本</span> <b data-i18n-ignore>v${escapeHtml(topologyCapabilities.collector_update.version)}</b></small>` : ""}${site.update_status?.enabled && !site.connected && !site.is_current ? '<small>采集器失联，显示最后上报的更新状态</small>' : ""}</div>
+      <p class="collector-connection-help">采集器在线表示可与平台通信；设备在线表示最近一次设备通信检查成功。</p>
       <div class="collector-node-foot"><span>${contactAt ? `心跳 ${relativeTime(contactAt)}` : site.is_current ? "本机状态实时读取" : "尚未收到心跳"}</span><span>${escapeHtml(site.id)}</span></div>
       ${state.key === "waiting" && !site.is_current ? `<button class="secondary-action collector-package-action" type="button" data-download-collector-package="${escapeHtml(site.id)}">下载自动安装包</button>` : ""}
+      ${topologyCapabilities.diagnostic_logs ? `<button class="secondary-action" type="button" data-collector-diagnostics="${escapeHtml(site.id)}">诊断日志</button>` : ""}
       ${error ? `<p class="collector-node-error"><strong>需要检查：</strong>${escapeHtml(error)}</p>` : ""}
     </article>`;
   }).join("") : '<div class="collector-empty">还没有采集器节点。请先添加并激活一台采集器。</div>';
@@ -477,24 +515,30 @@ function updateManualDeviceSiteHelp() {
 }
 
 function topologyDeviceState(device) {
+  const site = topologySites.find((item) => String(item.id) === String(device.site_id));
   const reading = latestByDevice[String(device.id)] || null;
-  const readingIsReal = reading?.source === "device";
-  const lastSeen = (readingIsReal ? readingTimestamp(reading) : null) || asTimestamp(device.last_seen_at);
+  const lastSeen = (reading?.source === "device" ? readingTimestamp(reading) : null) || asTimestamp(device.last_seen_at);
+  if (site && !site.is_current && !site.connected) {
+    return {key: "pending", label: "状态待确认", detail: "采集器失联，无法确认设备当前状态", lastSeen};
+  }
+  if (site?.monitor_running === false) {
+    return {key: "pending", label: "状态待确认", detail: "采集服务已停止，状态待确认", lastSeen};
+  }
+  const evidence = site?.device_states?.find((item) => String(item.device_id) === String(device.id));
+  if (evidence) {
+    if (evidence.state === "online") return {key: "online", label: "在线", detail: "最近一次设备通信检查成功", lastSeen};
+    if (evidence.state === "offline") return {key: "offline", label: "离线", detail: "最近一次设备通信检查失败，请查看诊断日志", lastSeen};
+    return {key: "pending", label: "状态待确认", detail: "尚无有效的设备通信检查结果", lastSeen};
+  }
+  // Compatibility with collectors that do not yet report individual checks.
   const fresh = Boolean(lastSeen && Date.now() / 1000 - lastSeen <= 45);
-  const hasCurrentResult = Boolean(reading);
-  const currentReadSucceeded = readingIsReal && reading.online !== false && !reading.error;
-  const online = fresh && (currentReadSucceeded || (!hasCurrentResult && device.online === true));
-  if (online) {
-    return { key: "online", label: "在线", detail: `真实读数更新于${relativeTime(lastSeen)}`, lastSeen };
+  if (fresh && ((reading?.source === "device" && reading.online !== false && !reading.error) || (!reading && device.online === true))) {
+    return {key: "online", label: "在线", detail: `真实读数更新于${relativeTime(lastSeen)}`, lastSeen};
   }
-  if (!lastSeen) {
-    return {
-      key: "pending", label: "待采集器确认",
-      detail: reading && !readingIsReal ? "仅有模拟数据，真实连接未确认" : "尚未收到首条真实读数",
-      lastSeen: null,
-    };
+  if (reading?.error && Date.now() / 1000 - Number(reading.timestamp || 0) <= 45) {
+    return {key: "offline", label: "离线", detail: reading.error, lastSeen};
   }
-  return { key: "offline", label: "离线", detail: `最后读数在${relativeTime(lastSeen)}`, lastSeen };
+  return {key: "pending", label: "状态待确认", detail: lastSeen ? "数据更新超时，设备连接状态待确认" : "尚未收到首条真实读数", lastSeen};
 }
 
 function topologySiteName(siteId) {
@@ -524,7 +568,7 @@ function renderTopology() {
     return `<article class="panel topology-room-card">
       <header>
         <div class="room-card-identity"><span>${String(index + 1).padStart(2, "0")}</span><div><p class="eyebrow">车间</p><h3 data-i18n-ignore>${escapeHtml(room.name)}</h3><small>${roomDevices.length ? `${onlineCount}/${roomDevices.length} 台在线` : "尚未添加设备"}</small></div></div>
-        <button class="secondary-action" type="button" data-add-device-room="${escapeHtml(room.id)}">＋ 添加设备</button>
+        <div class="room-card-actions"><button class="secondary-action" type="button" data-add-device-room="${escapeHtml(room.id)}">＋ 添加设备</button>${topologyCapabilities.can_delete_workshops ? `<button class="workshop-delete-action" type="button" data-delete-workshop="${escapeHtml(room.id)}">删除车间</button>` : ""}</div>
       </header>
       <div class="topology-device-list">
         ${roomDevices.length ? roomDevices.map((device) => {
@@ -957,6 +1001,66 @@ async function deleteDevice(event) {
     deviceDeleteBusy = false;
     ["confirmDeleteDeviceBtn", "cancelDeleteDeviceBtn", "closeDeleteDeviceDialogBtn"].forEach((id) => { $(id).disabled = false; });
     $("confirmDeleteDeviceBtn").textContent = "确认删除";
+  }
+}
+
+function openDeleteWorkshopDialog(roomId) {
+  if (!topologyCapabilities.can_delete_workshops || workshopDeleteBusy) return;
+  const room = rooms.find((item) => String(item.id) === String(roomId));
+  if (!room) return;
+  workshopToDelete = { id: String(room.id), name: String(room.name) };
+  $("deleteWorkshopName").textContent = room.name;
+  $("deleteWorkshopConfirmInput").value = "";
+  $("deleteWorkshopFormError").textContent = "";
+  $("confirmDeleteWorkshopBtn").disabled = true;
+  $("deleteWorkshopDialog").showModal();
+  $("deleteWorkshopConfirmInput").focus();
+}
+
+function closeDeleteWorkshopDialog() {
+  if (workshopDeleteBusy) return;
+  $("deleteWorkshopDialog").close();
+  workshopToDelete = null;
+}
+
+function validateWorkshopDeletion() {
+  const matches = Boolean(workshopToDelete)
+    && $("deleteWorkshopConfirmInput").value === workshopToDelete.name;
+  $("confirmDeleteWorkshopBtn").disabled = workshopDeleteBusy || !matches;
+  return matches;
+}
+
+async function deleteWorkshop(event) {
+  event.preventDefault();
+  if (!validateWorkshopDeletion() || workshopDeleteBusy) return;
+  const target = workshopToDelete;
+  workshopDeleteBusy = true;
+  $("deleteWorkshopFormError").textContent = "";
+  ["confirmDeleteWorkshopBtn", "cancelDeleteWorkshopBtn", "closeDeleteWorkshopDialogBtn"].forEach((id) => { $(id).disabled = true; });
+  $("confirmDeleteWorkshopBtn").textContent = "正在删除…";
+  try {
+    const updated = await api(`/api/admin/cleanrooms/${encodeURIComponent(target.id)}?expected_name=${encodeURIComponent(target.name)}`, {
+      method: "DELETE", signal: AbortSignal.timeout(15000),
+    });
+    applyTopologyRooms(updated);
+    $("deleteWorkshopDialog").close();
+    workshopToDelete = null;
+    showToast("车间已永久删除，采集器联网后将自动更新配置。", "ok");
+    Promise.all([loadTopologySites(true), refreshStats(), loadDataCleanupPreview()]).catch(() => {});
+  } catch (error) {
+    if (error.status === 401) {
+      $("deleteWorkshopDialog").close();
+      workshopToDelete = null;
+      showToast("登录已失效，请重新登录。", "error");
+    } else {
+      $("deleteWorkshopFormError").textContent = ["TimeoutError", "AbortError"].includes(error.name)
+        ? "请求超时，删除结果尚未确认。请刷新页面核对。" : friendlyError(error.message);
+    }
+  } finally {
+    workshopDeleteBusy = false;
+    ["cancelDeleteWorkshopBtn", "closeDeleteWorkshopDialogBtn"].forEach((id) => { $(id).disabled = false; });
+    $("confirmDeleteWorkshopBtn").textContent = "永久删除车间";
+    validateWorkshopDeletion();
   }
 }
 
@@ -2022,6 +2126,143 @@ async function refreshStats() {
   }
 }
 
+function cleanupSummary(counts, includeDevices = false) {
+  const value = counts || {};
+  if (uiLocale().startsWith("en")) {
+    const countLabel = (count, singular, plural = `${singular}s`) => {
+      const numeric = Number(count || 0);
+      return `${numeric.toLocaleString("en-US")} ${numeric === 1 ? singular : plural}`;
+    };
+    const parts = [];
+    if (includeDevices) parts.push(countLabel(value.devices, "retired device"));
+    parts.push(countLabel(value.readings, "reading"));
+    parts.push(countLabel(value.alarms, "alarm"));
+    return parts.join(" · ");
+  }
+  const parts = [];
+  if (includeDevices) parts.push(`${formatNumber(value.devices || 0, 0)} 台已删除设备`);
+  parts.push(`${formatNumber(value.readings || 0, 0)} 条读数`);
+  parts.push(`${formatNumber(value.alarms || 0, 0)} 条报警`);
+  return parts.join(" · ");
+}
+
+function renderDataCleanupPreview() {
+  const card = $("dataCleanupCard");
+  card.hidden = !topologyCapabilities.can_cleanup_data;
+  if (card.hidden || !dataCleanupPreview) return;
+  const retired = dataCleanupPreview.retired_devices || {};
+  const global = dataCleanupPreview.all_monitoring || {};
+  $("retiredCleanupSummary").textContent = cleanupSummary(retired, true);
+  $("globalCleanupSummary").textContent = cleanupSummary(global, false);
+  const retiredButton = card.querySelector('[data-cleanup-scope="retired_devices"]');
+  const globalButton = card.querySelector('[data-cleanup-scope="all_monitoring"]');
+  if (retiredButton) retiredButton.disabled = Number(retired.total || 0) === 0;
+  if (globalButton) globalButton.disabled = Number(global.total || 0) === 0;
+}
+
+async function loadDataCleanupPreview() {
+  if (!topologyCapabilities.can_cleanup_data) {
+    $("dataCleanupCard").hidden = true;
+    return;
+  }
+  try {
+    dataCleanupPreview = await api("/api/admin/data-cleanup/preview");
+    renderDataCleanupPreview();
+  } catch (error) {
+    if (error.status === 403) {
+      topologyCapabilities.can_cleanup_data = false;
+      $("dataCleanupCard").hidden = true;
+      return;
+    }
+    $("dataCleanupCard").hidden = false;
+    $("retiredCleanupSummary").textContent = friendlyError(error.message);
+    $("globalCleanupSummary").textContent = friendlyError(error.message);
+  }
+}
+
+function openDataCleanupDialog(scope) {
+  if (dataCleanupBusy || !topologyCapabilities.can_cleanup_data || !dataCleanupPreview?.[scope]) return;
+  dataCleanupScope = scope;
+  const retired = scope === "retired_devices";
+  const counts = dataCleanupPreview[scope];
+  const code = retired ? "PURGE RETIRED" : "PURGE ALL";
+  $("dataCleanupScopeLabel").textContent = retired ? "清理已删除设备数据" : "全局清理当前客户的监测数据";
+  $("dataCleanupImpact").textContent = retired
+    ? "永久删除已停用设备的读数、报警、维护及设备登记记录；启用中的设备不受影响。"
+    : "永久删除当前客户的全部历史读数、最新快照、报警事件和通知记录。";
+  $("dataCleanupCounts").innerHTML = [
+    ["设备", counts.devices], ["历史读数", counts.readings], ["最新快照", counts.latest],
+    ["报警事件", counts.alarms], ["通知记录", counts.notifications],
+  ].map(([label, value]) => `<div><dt>${uiText(label)}</dt><dd>${formatNumber(value || 0, 0)}</dd></div>`).join("");
+  $("dataCleanupConfirmCode").textContent = code;
+  $("dataCleanupConfirmInput").value = "";
+  $("dataCleanupFormError").textContent = "";
+  $("confirmDataCleanupBtn").disabled = true;
+  $("dataCleanupDialog").showModal();
+  $("dataCleanupConfirmInput").focus();
+}
+
+function closeDataCleanupDialog() {
+  if (dataCleanupBusy) return;
+  $("dataCleanupDialog").close();
+  dataCleanupScope = null;
+}
+
+function validateDataCleanup() {
+  const expected = dataCleanupScope === "retired_devices" ? "PURGE RETIRED" : "PURGE ALL";
+  const matches = Boolean(dataCleanupScope) && $("dataCleanupConfirmInput").value.trim() === expected;
+  $("confirmDataCleanupBtn").disabled = dataCleanupBusy || !matches;
+  return matches;
+}
+
+async function runDataCleanup(event) {
+  event.preventDefault();
+  if (!validateDataCleanup() || dataCleanupBusy) return;
+  const scope = dataCleanupScope;
+  const confirmation = scope === "retired_devices" ? "PURGE RETIRED" : "PURGE ALL";
+  dataCleanupBusy = true;
+  $("dataCleanupFormError").textContent = "";
+  ["confirmDataCleanupBtn", "cancelDataCleanupBtn", "closeDataCleanupDialogBtn"].forEach((id) => { $(id).disabled = true; });
+  $("confirmDataCleanupBtn").textContent = "正在清理…";
+  try {
+    const result = await api("/api/admin/data-cleanup", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, confirmation }), signal: AbortSignal.timeout(30000),
+    });
+    dataCleanupPreview = result.remaining;
+    historyRooms = null;
+    storedHistory = [];
+    storedTrendHistory = [];
+    alarmEvents = [];
+    if (scope === "all_monitoring") {
+      latestByDevice = {};
+      realtimeByDevice = {};
+      updateRealtimeDisplay();
+      updateNavAlarmCount();
+    }
+    $("dataCleanupDialog").close();
+    dataCleanupScope = null;
+    renderDataCleanupPreview();
+    await refreshStats();
+    if (typeof loadDeviceLifecycle === "function") await loadDeviceLifecycle();
+    showToast(scope === "retired_devices" ? "已永久清理已删除设备及其记录。" : "已永久清理当前客户的全部监测数据。", "ok");
+  } catch (error) {
+    if (error.status === 401) {
+      $("dataCleanupDialog").close();
+      dataCleanupScope = null;
+      showToast("登录已失效，请重新登录。", "error");
+    } else {
+      $("dataCleanupFormError").textContent = ["TimeoutError", "AbortError"].includes(error.name)
+        ? "请求超时，清理结果尚未确认。请刷新统计后核对。" : friendlyError(error.message);
+    }
+  } finally {
+    dataCleanupBusy = false;
+    ["cancelDataCleanupBtn", "closeDataCleanupDialogBtn"].forEach((id) => { $(id).disabled = false; });
+    $("confirmDataCleanupBtn").textContent = "永久清理";
+    validateDataCleanup();
+  }
+}
+
 function emailPayload() {
   return {
     enabled: $("emailEnabledInput").checked,
@@ -2140,6 +2381,13 @@ async function sendTestEmail() {
   }
 }
 
+async function refreshTopology() {
+  const [updatedRooms] = await Promise.all([
+    api("/api/config"), loadTopologySites(true), loadPendingCollectors(), loadDiscoveredDevices(),
+  ]);
+  applyTopologyRooms(updatedRooms);
+}
+
 function switchView(view) {
   if ($("settingsView").classList.contains("active")) {
     if (view === "settings") return;
@@ -2165,13 +2413,16 @@ function switchView(view) {
   if (view === "alarms") refreshAlarmHistory();
   if (view === "topology") {
     renderTopology();
-    Promise.all([loadTopologySites(true), loadPendingCollectors(), loadDiscoveredDevices()])
+    refreshTopology()
       .catch((error) => showToast(`设备接入信息加载失败：${friendlyError(error.message)}`, "error"));
   }
   if (view === "settings") {
     renderRoomManager();
     refreshStats();
     loadEmailSettings();
+    loadTopologySites().then(loadDataCleanupPreview).catch((error) => {
+      showToast(`数据清理统计加载失败：${friendlyError(error.message)}`, "error");
+    });
   }
   setTimeout(() => {
     drawRealtimeTrend();
@@ -2302,6 +2553,27 @@ function bindEvents() {
     if (deviceDeleteBusy) event.preventDefault();
     else deviceToDelete = null;
   });
+  $("deleteWorkshopForm").addEventListener("submit", deleteWorkshop);
+  $("deleteWorkshopConfirmInput").addEventListener("input", validateWorkshopDeletion);
+  $("closeDeleteWorkshopDialogBtn").addEventListener("click", closeDeleteWorkshopDialog);
+  $("cancelDeleteWorkshopBtn").addEventListener("click", closeDeleteWorkshopDialog);
+  $("deleteWorkshopDialog").addEventListener("cancel", (event) => {
+    if (workshopDeleteBusy) event.preventDefault();
+    else workshopToDelete = null;
+  });
+  $("dataCleanupCard").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-cleanup-scope]");
+    if (button) openDataCleanupDialog(button.dataset.cleanupScope);
+  });
+  $("refreshCleanupPreviewBtn").addEventListener("click", loadDataCleanupPreview);
+  $("dataCleanupForm").addEventListener("submit", runDataCleanup);
+  $("dataCleanupConfirmInput").addEventListener("input", validateDataCleanup);
+  $("closeDataCleanupDialogBtn").addEventListener("click", closeDataCleanupDialog);
+  $("cancelDataCleanupBtn").addEventListener("click", closeDataCleanupDialog);
+  $("dataCleanupDialog").addEventListener("cancel", (event) => {
+    if (dataCleanupBusy) event.preventDefault();
+    else dataCleanupScope = null;
+  });
   $("manualDeviceRoomInput").addEventListener("change", () => {
     $("manualDeviceNameInput").value = suggestedManualDeviceName($("manualDeviceRoomInput").value);
   });
@@ -2311,6 +2583,8 @@ function bindEvents() {
     if (roomButton) openManualDeviceDialog(roomButton.dataset.addDeviceRoom);
     const deleteButton = event.target.closest("[data-delete-device]");
     if (deleteButton) openDeleteDeviceDialog(deleteButton.dataset.deleteDevice);
+    const deleteWorkshopButton = event.target.closest("[data-delete-workshop]");
+    if (deleteWorkshopButton) openDeleteWorkshopDialog(deleteWorkshopButton.dataset.deleteWorkshop);
     if (event.target.closest("[data-create-cleanroom]")) openCleanroomDialog();
   });
   $("logoutBtn").addEventListener("click", logout);
@@ -2330,7 +2604,7 @@ function bindEvents() {
   $("testEmailBtn").addEventListener("click", sendTestEmail);
   $("refreshEmailBtn").addEventListener("click", loadEmailSettings);
   $("settingsView").addEventListener("input", (event) => {
-    if (event.target.closest("#emailAlertCard")) return;
+    if (event.target.closest("#emailAlertCard") || event.target.closest("#dataCleanupCard")) return;
     if (!event.target.matches("input")) return;
     const channel = particleAlarmChannels.find((item) => item.enabledInput === event.target.id);
     if (channel) syncParticleRuleControl(channel);
@@ -2380,6 +2654,7 @@ function bindEvents() {
   });
   window.addEventListener("hawkhive:localechange", () => {
     updateExportLink();
+    renderDataCleanupPreview();
     if (!rooms.length) return;
     renderRealtimeSeriesSelector();
     renderHistorySeriesSelector();

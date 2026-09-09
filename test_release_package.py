@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from build_release import build_release
 from build_test_package import PACKAGE_ROOT, build_test_package
@@ -16,6 +17,38 @@ from build_windows_exe_package import (
 
 
 class ReleasePackageTests(unittest.TestCase):
+    def test_signed_update_is_packaged_and_corrupt_artifact_blocks_release(self) -> None:
+        import base64
+        import hashlib
+        import json
+        import time
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from update_protocol import canonical
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            updates = root / "release" / "updates"
+            updates.mkdir(parents=True)
+            content = b"MZ-local-release-packaging-test"
+            key = Ed25519PrivateKey.generate()
+            public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+            release = dict(version="0.6.1", platform="windows-x64", protocol=1,
+                           size=len(content), sha256=hashlib.sha256(content).hexdigest(),
+                           issued_at=int(time.time()), expires_at=int(time.time()) + 3600)
+            envelope = dict(release=release, key_id="qa", signature=base64.b64encode(key.sign(canonical(release))).decode())
+            (updates / "stable.json").write_text(json.dumps(envelope), encoding="utf-8")
+            artifact = updates / (release["sha256"] + ".exe")
+            artifact.write_bytes(content)
+            (updates / "unrelated-secret.key").write_text("never package", encoding="utf-8")
+            with patch("build_release.ROOT", root), patch.dict("update_protocol.TRUSTED_KEYS", {"qa": public}, clear=True):
+                files, _ = build_release(root / "package.zip")
+                self.assertIn("release/updates/stable.json", files)
+                self.assertIn("release/updates/" + artifact.name, files)
+                self.assertFalse(any("unrelated-secret" in name for name in files))
+                artifact.write_bytes(b"MZ-corrupt")
+                with self.assertRaises(ValueError):
+                    build_release(root / "corrupt.zip")
+
     def test_cloud_provisioning_requires_an_explicit_device_host(self) -> None:
         root = Path(__file__).resolve().parent
         schema = (root / "cloud_schema.sql").read_text(encoding="utf-8")

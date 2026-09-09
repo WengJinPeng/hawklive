@@ -25,6 +25,8 @@ venv/
 dist/
 build/
 *.exe
+/release/*.exe.sha256
+/release/updates/
 *.zip
 *.log
 *.pem

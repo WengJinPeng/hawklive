@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from connection_status import cloud_device_status
+from collector_update_api import register_update_routes, release_summary
+
 import base64
 import hashlib
 import hmac
@@ -36,6 +39,7 @@ from alarm_config import DEFAULT_THRESHOLDS, normalise_alarm_thresholds
 from auth_service import AuthService
 from email_alerts import enqueue_alarm
 from email_api import register_email_routes
+from diagnostics_api import register_diagnostic_routes
 from report_i18n import (
     normalize_report_locale,
     report_alarm_details,
@@ -220,6 +224,24 @@ class CollectorPackageRequest(BaseModel):
     activation_token: str = Field(min_length=24, max_length=500)
 
 
+class DeviceConnectionStatus(BaseModel):
+    device_id: str = Field(min_length=1, max_length=200)
+    state: Literal["online", "offline", "unknown"]
+    checked_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+class CollectorUpdateStatus(BaseModel):
+    enabled: bool = False
+    state: Literal["manual_upgrade_required", "starting", "restarting", "idle", "checking", "available", "downloading", "installing", "updated", "up_to_date", "failed", "rolled_back"] = "manual_upgrade_required"
+    current_version: str | None = Field(default=None, max_length=80)
+    available_version: str | None = Field(default=None, max_length=80)
+    blocked_version: str | None = Field(default=None, max_length=80)
+    updated_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    last_check_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    last_success_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    error: str | None = Field(default=None, max_length=500)
+
+
 class CollectorHeartbeat(BaseModel):
     site_id: str = Field(min_length=1, max_length=200)
     collector_time: float = Field(gt=0)
@@ -229,6 +251,8 @@ class CollectorHeartbeat(BaseModel):
     monitor_running: bool
     device_total: int = Field(ge=0, le=10000)
     device_online: int = Field(ge=0, le=10000)
+    update_status: CollectorUpdateStatus | None = None
+    device_states: list[DeviceConnectionStatus] | None = Field(default=None, max_length=10000)
     last_reading_at: float | None = Field(default=None, gt=0)
     pending_uploads: int = Field(default=0, ge=0)
     quarantined_uploads: int = Field(default=0, ge=0)
@@ -244,6 +268,12 @@ class CollectorHeartbeat(BaseModel):
 
     @model_validator(mode="after")
     def validate_status_relationships(self) -> CollectorHeartbeat:
+        if self.device_states is not None:
+            ids = {item.device_id for item in self.device_states}
+            if len(ids) != len(self.device_states) or len(ids) != self.device_total:
+                raise ValueError("Device connection report must contain each device exactly once")
+            if sum(item.state == "online" for item in self.device_states) != self.device_online:
+                raise ValueError("Device connection counts do not match")
         if self.device_online > self.device_total:
             raise ValueError("Online device count exceeds total devices")
         if self.config_apply_status == "applied" and self.applied_config_version is None:
@@ -331,6 +361,7 @@ DISCOVERY_HISTORY_RETENTION_DAYS = bounded_env_int(
 )
 COLLECTOR_INSTANCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 TOPOLOGY_MANAGER_ROLES = {"admin", "customer_admin", "customer"}
+DATA_DESTRUCTION_ROLES = {"admin", "customer_admin"}
 PRIVATE_DEVICE_NETWORKS = tuple(
     ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 )
@@ -501,6 +532,33 @@ def topology_manager(user: dict[str, object] = Depends(customer_user)) -> dict[s
     return user
 
 
+def is_primary_data_manager(user: dict[str, object], *, db: Any = None) -> bool:
+    """Return whether this is the tenant's primary enabled administrator."""
+    if str(user.get("role", "")).casefold() not in DATA_DESTRUCTION_ROLES:
+        return False
+    with (nullcontext(db) if db is not None else connect()) as connection:
+        row = connection.execute(
+            """
+            SELECT id FROM customer_users
+            WHERE customer_id=%s AND enabled=true AND lower(role)=ANY(%s)
+            ORDER BY created_at,id LIMIT 1
+            """,
+            (str(user["customer_id"]), list(DATA_DESTRUCTION_ROLES)),
+        ).fetchone()
+    return bool(row and str(row[0]) == str(user.get("id")))
+
+
+def primary_data_manager(
+    user: dict[str, object] = Depends(customer_user),
+) -> dict[str, object]:
+    if not is_primary_data_manager(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Primary administrator permission is required for permanent deletion",
+        )
+    return user
+
+
 def customer_configuration(
     customer_id: str, *, include_disabled: bool = False, db: Any = None,
 ) -> list[dict[str, object]]:
@@ -632,7 +690,7 @@ def validated_device_connection(device: dict[str, Any]) -> tuple[str, str, int, 
     if address.version != 4 or not any(address in network for network in PRIVATE_DEVICE_NETWORKS):
         raise HTTPException(status_code=400, detail="Device IP must be a private IPv4 address")
     try:
-        tcp_port = int(device.get("tcpPort", 502))
+        tcp_port = int(device.get("tcpPort", device.get("tcp_port", 502)))
         slave = int(device.get("slave", 1))
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Port and Slave ID must be whole numbers") from exc
@@ -1630,12 +1688,13 @@ def get_admin_sites(
             """,
             (customer_id,),
         ).fetchall()
+        can_destroy_data = is_primary_data_manager(user, db=db)
     now = time.time()
     sites: list[dict[str, object]] = []
     for row in rows:
         heartbeat_at = row[3].timestamp() if row[3] else None
         last_contact_at = row[8].timestamp() if row[8] else None
-        connected = bool(heartbeat_at and now - heartbeat_at <= COLLECTOR_LEASE_SECONDS)
+        connected = bool(heartbeat_at and 0 <= now - heartbeat_at <= COLLECTOR_LEASE_SECONDS)
         legacy_contact = bool(
             not heartbeat_at and last_contact_at
             and now - last_contact_at <= COLLECTOR_LEASE_SECONDS
@@ -1669,11 +1728,11 @@ def get_admin_sites(
             "legacy_contact": legacy_contact,
             "is_current": False,
             "version": status.get("version"),
+            "update_status": status.get("update_status") or {"enabled": False, "state": "manual_upgrade_required"},
             "hostname": status.get("hostname"),
             "platform": status.get("platform"),
             "monitor_running": status.get("monitor_running"),
-            "device_total": int(status.get("device_total") or 0),
-            "device_online": int(status.get("device_online") or 0),
+            **cloud_device_status(status, connected),
             "last_reading_at": status.get("last_reading_at"),
             "pending_uploads": int(status.get("pending_uploads") or 0),
             "quarantined_uploads": int(status.get("quarantined_uploads") or 0),
@@ -1693,10 +1752,14 @@ def get_admin_sites(
             "max_collectors": MAX_COLLECTORS,
             "manual_registration": True,
             "can_delete_devices": True,
+            "can_delete_workshops": can_destroy_data,
+            "can_cleanup_data": can_destroy_data,
             "device_lifecycle": True,
             "connection_verification": "collector",
             "management_scope": "customer",
             "can_create_collectors": True,
+            "diagnostic_logs": True,
+            "collector_update": release_summary(),
             "can_download_collector": True,
             "scope_notice": "可在这里管理本客户的全部采集器节点。",
         },
@@ -3190,10 +3253,14 @@ def ingest_alarms(batch: AlarmBatch, identity: dict[str, str] = Depends(edge_ide
 
 
 register_email_routes(app, connect, topology_manager, record_configuration_audit)
+register_diagnostic_routes(app, connect, topology_manager, edge_identity)
 from device_lifecycle import register_device_lifecycle
 import sys
 register_device_lifecycle(sys.modules[__name__])
+from data_management import register_data_management
+register_data_management(sys.modules[__name__])
 
+register_update_routes(app)
 PUBLIC_DIR = Path(__file__).with_name("public")
 if PUBLIC_DIR.exists():
     app.mount("/", StaticFiles(directory=PUBLIC_DIR, html=True), name="customer-dashboard")

@@ -26,12 +26,15 @@ from urllib.parse import parse_qs, urlparse
 
 from auth_service import DEFAULT_CUSTOMER_ID, AuthenticationError, AuthService
 from cloud_sync import COLLECTOR_VERSION, CloudSyncService
+from connection_status import device_snapshot
+from update_protocol import read_json
 from collector_settings import (
     load_settings,
     save_settings,
     validate_settings,
 )
 from dcp8001_collector import Dcp8001TcpClient
+from collector_diagnostics import init_queue, enqueue, redact, log_scope, LOCAL_LOG_LIMIT, LOCAL_LOG_SECONDS
 from device_discovery import (
     local_private_networks,
     scan_modbus_devices,
@@ -96,11 +99,10 @@ def collector_runtime_snapshot() -> dict[str, object]:
     rooms = MONITOR.configuration(customer_id) if MONITOR else []
     latest = MONITOR.latest_for_room(customer_id) if MONITOR else []
     devices = [device for room in rooms for device in room.get("devices", [])]
-    online = [
-        item for item in latest
-        if item.get("source") == "device" and item.get("online") is True
-        and not item.get("error")
-    ]
+    running = bool(MONITOR and MONITOR._thread and MONITOR._thread.is_alive())
+    connection = device_snapshot(devices, latest, running=running,
+                                 poll_seconds=MONITOR.options.poll_seconds if MONITOR else 10,
+                                 now=time.time())
     successful_times = [
         float(item.get("last_reading_at") or item.get("timestamp") or 0)
         for item in latest
@@ -109,9 +111,11 @@ def collector_runtime_snapshot() -> dict[str, object]:
     ]
     errors = [str(item.get("error")) for item in latest if item.get("error")]
     return {
-        "monitor_running": bool(MONITOR and MONITOR._thread and MONITOR._thread.is_alive()),
-        "device_total": len(devices),
-        "device_online": len(online),
+        "update_status": read_json(RUNTIME_PATHS.data_dir / "collector-update-status.json") if os.environ.get("DCP_SUPERVISOR_NONCE") else {"enabled": False, "state": "manual_upgrade_required"},
+        "monitor_running": running,
+        "poll_seconds": MONITOR.options.poll_seconds if MONITOR else None,
+        "record_seconds": MONITOR.options.record_seconds if MONITOR else None,
+        **connection,
         "last_reading_at": max(successful_times, default=0) or None,
         "last_error": errors[0][:500] if errors else None,
         "storage": STORAGE.status() if STORAGE else {
@@ -201,16 +205,30 @@ def init_db() -> None:
                 """CREATE INDEX IF NOT EXISTS idx_readings_scope_time
                    ON readings(customer_id, cleanroom_id, device_id, timestamp)"""
             )
+        init_queue(db)
         db.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)")
         db.execute("PRAGMA optimize")
 
 
 def add_log(level: str, event: str, message: str) -> None:
+    sync = CLOUD_SYNC
+    message = redact(message, (sync.token,) if sync else ())
+    event = redact(event)[:100]
     with connect_db() as db:
         db.execute(
             "INSERT INTO logs(timestamp, level, event, message) VALUES (?, ?, ?, ?)",
             (time.time(), level, event, message),
         )
+        db.execute("DELETE FROM logs WHERE timestamp < ?", (time.time() - LOCAL_LOG_SECONDS,))
+        db.execute("DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY id DESC LIMIT -1 OFFSET ?)", (LOCAL_LOG_LIMIT,))
+        # Bind at capture time. Never upload another customer's historical logs
+        # after re-enrollment; pre-enrollment logs remain local.
+        origin = log_scope.get()
+        if sync and sync.customer_id and (origin is None or origin == (sync.customer_id, sync.site_id)):
+            try:
+                enqueue(db, sync.customer_id, sync.site_id, sync.instance_id, level, event, message)
+            except sqlite3.Error:
+                pass  # Optional diagnostics must not turn a successful read into failure.
 
 
 def reading_to_dict(reading: object) -> dict[str, object]:
@@ -737,6 +755,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.write_json({
                 "ok": monitor_running and storage.get("state") != "critical",
                 "data": {
+                    "version": COLLECTOR_VERSION,
+                    "supervisor_nonce": os.environ.get("DCP_SUPERVISOR_NONCE"),
                     "monitor_running": monitor_running,
                     "storage_state": storage.get("state"),
                     "database_integrity": storage.get("integrity"),
@@ -935,8 +955,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "id": CLOUD_SYNC.site_id,
                 "name": CLOUD_SYNC.site_name or f"本机采集器 · {CLOUD_SYNC.site_id}",
                 "is_current": True,
-                "connected": bool(runtime.get("monitor_running")),
-                "connection_state": "online" if runtime.get("monitor_running") else "offline",
+                "connected": True,
+                "connection_state": "online",
                 "last_contact_at": status.get("last_contact_at"),
                 "last_heartbeat_at": status.get("last_heartbeat_at"),
                 "config_version": desired_revision,
@@ -950,6 +970,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "monitor_running": runtime.get("monitor_running"),
                 "device_total": runtime.get("device_total", 0),
                 "device_online": runtime.get("device_online", 0),
+                "device_offline": runtime.get("device_offline", 0),
+                "device_unknown": runtime.get("device_unknown", 0),
+                "device_states": runtime.get("device_states", []),
                 "last_reading_at": runtime.get("last_reading_at"),
                 "pending_uploads": status.get("pending_uploads", 0),
                 "quarantined_uploads": status.get("quarantined_uploads", 0),
@@ -964,8 +987,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "id": "local",
                 "name": "本机采集器",
                 "is_current": True,
-                "connected": bool(runtime.get("monitor_running")),
-                "connection_state": "online" if runtime.get("monitor_running") else "offline",
+                "connected": True,
+                "connection_state": "online",
                 "last_contact_at": None,
                 "last_heartbeat_at": None,
                 "config_version": None,
@@ -979,6 +1002,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "monitor_running": runtime.get("monitor_running"),
                 "device_total": runtime.get("device_total", 0),
                 "device_online": runtime.get("device_online", 0),
+                "device_offline": runtime.get("device_offline", 0),
+                "device_unknown": runtime.get("device_unknown", 0),
+                "device_states": runtime.get("device_states", []),
                 "last_reading_at": runtime.get("last_reading_at"),
                 "pending_uploads": 0,
                 "quarantined_uploads": 0,
@@ -1327,6 +1353,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.write_json({"ok": True, "data": {
             "mode": "demo" if MONITOR and MONITOR.options.demo else "device",
             "monitor_running": bool(MONITOR and MONITOR._thread and MONITOR._thread.is_alive()),
+            "record_seconds": MONITOR.options.record_seconds if MONITOR else None,
             "cloud_configured": cloud_enabled,
             "cloud_running": cloud_status["running"],
             "cloud_connected": cloud_status["connected"],

@@ -105,6 +105,8 @@ class Dcp8001ProtocolTests(unittest.TestCase):
         chunks = [registers[start : start + 2] for start in range(0, 26, 2)]
         client = object.__new__(Dcp8001TcpClient)
         client.slave = 1
+        client.timeout = 1.0
+        client.connect_settle = 0.0
         client.read_holding_registers = MagicMock(side_effect=[[1], *chunks])
 
         reading = client.read_realtime()

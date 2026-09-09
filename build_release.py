@@ -37,6 +37,18 @@ def release_files() -> list[Path]:
         path = release / name
         if path.is_file() and not path.is_symlink():
             files.append(path)
+    manifest = release / "updates" / "stable.json"
+    if manifest.exists():
+        import json
+        from update_protocol import verify_executable, verify_manifest
+        if manifest.is_symlink():
+            raise ValueError("Update manifest cannot be a symbolic link")
+        payload = verify_manifest(json.loads(manifest.read_text(encoding="utf-8")))
+        artifact = manifest.parent / (payload["sha256"] + ".exe")
+        if artifact.is_symlink():
+            raise ValueError("Update executable cannot be a symbolic link")
+        verify_executable(artifact, payload)
+        files.extend([manifest, artifact])
     return sorted(files, key=lambda path: path.relative_to(ROOT).as_posix())
 
 

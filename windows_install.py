@@ -85,7 +85,6 @@ def scheduled_task_xml(executable: Path, data_dir: Path) -> str:
   <Principals>
     <Principal id="System">
       <UserId>S-1-5-18</UserId>
-      <LogonType>ServiceAccount</LogonType>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>

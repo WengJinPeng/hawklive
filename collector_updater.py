@@ -126,6 +126,33 @@ def _contain_windows_children():
     return handle  # Keep handle open for the entire supervisor lifetime.
 
 
+def _watch_windows_bootstrap_parent():
+    """Task Scheduler owns the onefile bootloader, outside our Python job.
+
+    If Scheduler ends that outer process, terminate this supervisor too. Closing
+    its job handle then also terminates every owned collection worker.
+    """
+    import ctypes
+    import threading
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    parent = kernel.OpenProcess(0x100000, False, os.getppid())  # SYNCHRONIZE
+    if not parent:
+        raise ctypes.WinError(ctypes.get_last_error())
+    def watch():
+        result = kernel.WaitForSingleObject(parent, 0xFFFFFFFF)
+        kernel.CloseHandle(parent)
+        # Both parent death and an invalid wait must fail closed, never leave an
+        # unowned collector. The OS closes our job handle even on abrupt exit.
+        os._exit(1 if result == 0 else 2)
+    threading.Thread(target=watch, name='bootstrap-lifetime', daemon=True).start()
+
+
 class Supervisor:
     def __init__(self, install_dir: Path, data_dir: Path, port: int):
         self.transaction = UpdateTransaction(install_dir)
@@ -288,6 +315,7 @@ def run_supervisor(data_dir: Path, port: int) -> int:
         raise RuntimeError('Automatic updates require the installed Windows collector')
     # Task Scheduler's process tree is contained before creating any workers.
     job_handle = _contain_windows_children()
+    _watch_windows_bootstrap_parent()
     lock = SingleInstanceLock(install_dir/'supervisor.lock')
     lock.acquire()
     try:

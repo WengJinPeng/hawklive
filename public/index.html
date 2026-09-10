@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0b252d" />
     <title>HawkHive 洁净环境监测</title>
-    <link rel="stylesheet" href="./styles.css?v=20260910-collector-retire" />
+    <link rel="stylesheet" href="./styles.css?v=20260910-node-layout" />
   </head>
   <body class="auth-pending">
     <section id="loginView" class="login-shell" aria-labelledby="loginTitle">
@@ -185,7 +185,8 @@
           </section>
 
           <section class="panel collector-overview" aria-labelledby="collectorOverviewTitle">
-            <header><div><p class="eyebrow">采集器节点</p><h3 id="collectorOverviewTitle">采集器节点</h3><p id="collectorScopeNotice">正在确认管理范围。</p></div><div class="collector-overview-count"><strong id="collectorOnlineCount">0 / 0</strong><span>节点在线</span></div></header>
+            <header><div><h3 id="collectorOverviewTitle">采集器节点</h3><p id="collectorScopeNotice">正在确认管理范围。</p></div><div class="collector-overview-count"><strong id="collectorOnlineCount">0 / 0</strong><span>节点在线</span></div></header>
+            <p class="collector-connection-help">采集器在线表示可与平台通信；设备在线表示最近一次设备通信检查成功。</p>
             <div id="collectorNodeList" class="collector-node-list" aria-live="polite"></div>
           </section>
 
@@ -430,7 +431,7 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="./i18n.js?v=20260910-collector-retire"></script>
-    <script src="./app.js?v=20260910-collector-retire"></script>
+    <script src="./app.js?v=20260910-node-layout"></script>
     <script src="./diagnostics.js?v=20260910-collector-retire"></script>
     <script src="./device-lifecycle.js?v=20260908-data-management"></script>
   </body>

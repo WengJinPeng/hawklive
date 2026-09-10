@@ -468,7 +468,7 @@ function renderCollectorNodes() {
   const retiredExpanded = $("collectorNodeList").querySelector(".collector-retired")?.open;
   const onlineCount = topologySites.filter((site) => site.connected).length;
   $("collectorOnlineCount").textContent = `${onlineCount} / ${topologySites.length}`;
-  $("collectorNodeList").innerHTML = topologySites.length ? topologySites.map((site) => {
+  const cards = topologySites.length ? topologySites.map((site) => {
     const state = collectorNodeState(site);
     const contactAt = site.last_heartbeat_at || site.last_contact_at;
     const identity = [site.hostname, site.version ? `v${site.version}` : null].filter(Boolean).join(" · ");
@@ -488,14 +488,16 @@ function renderCollectorNodes() {
         <div><dt>磁盘可用</dt><dd>${formatBytes(site.disk_free_bytes)}</dd></div>
       </dl>
       <div class="collector-update-summary"><strong>自动更新</strong><span>${escapeHtml(uiText(collectorUpdateLabel(site)))}</span>${topologyCapabilities.collector_update?.version ? `<small><span>可用版本</span> <b data-i18n-ignore>v${escapeHtml(topologyCapabilities.collector_update.version)}</b></small>` : ""}${site.update_status?.enabled && !site.connected && !site.is_current ? '<small>采集器失联，显示最后上报的更新状态</small>' : ""}</div>
-      <p class="collector-connection-help">采集器在线表示可与平台通信；设备在线表示最近一次设备通信检查成功。</p>
       <div class="collector-node-foot"><span>${contactAt ? `心跳 ${relativeTime(contactAt)}` : site.is_current ? "本机状态实时读取" : "尚未收到心跳"}</span><span>${escapeHtml(site.id)}</span></div>
+      <div class="collector-node-actions">
       ${state.key === "waiting" && !site.is_current ? `<button class="secondary-action collector-package-action" type="button" data-download-collector-package="${escapeHtml(site.id)}">下载自动安装包</button>` : ""}
       ${topologyCapabilities.diagnostic_logs ? `<button class="secondary-action" type="button" data-collector-diagnostics="${escapeHtml(site.id)}">诊断日志</button>` : ""}
       ${topologyCapabilities.can_retire_collectors ? `<button class="secondary-action" type="button" data-retire-collector="${escapeHtml(site.id)}" ${site.can_retire ? "" : "disabled"} title="${escapeHtml(uiText(site.assigned_device_count ? "请先转移关联设备" : "请先退出现场采集程序并等待离线"))}">移除采集器</button>` : ""}
+      </div>
       ${error ? `<p class="collector-node-error"><strong>需要检查：</strong>${escapeHtml(error)}</p>` : ""}
     </article>`;
   }).join("") : '<div class="collector-empty">还没有采集器节点。请先添加并激活一台采集器。</div>';
+  $("collectorNodeList").innerHTML = `<div class="collector-active-list">${cards}</div>`;
   const retired = topologyCapabilities.retired_sites || [];
   if (retired.length) $("collectorNodeList").insertAdjacentHTML("beforeend", `<details class="collector-retired" ${retiredExpanded ? "open" : ""}><summary>${escapeHtml(uiText("已移除采集器"))} (${retired.length})</summary>${retired.map(site => `<p><strong data-i18n-ignore>${escapeHtml(site.name)}</strong> <small data-i18n-ignore>${escapeHtml(site.id)}</small> <span>${escapeHtml(uiText("历史数据保留"))}</span> <button class="secondary-action" type="button" data-collector-diagnostics="${escapeHtml(site.id)}">诊断日志</button></p>`).join("")}</details>`);
 }

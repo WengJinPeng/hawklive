@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS sites (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS retired_at timestamptz;
+
 CREATE TABLE IF NOT EXISTS customer_users (
     id uuid PRIMARY KEY,
     customer_id text NOT NULL REFERENCES customers(id),

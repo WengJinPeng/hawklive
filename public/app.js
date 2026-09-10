@@ -465,6 +465,7 @@ function collectorUpdateLabel(site) {
 
 function renderCollectorNodes() {
   if (!$("collectorNodeList")) return;
+  const retiredExpanded = $("collectorNodeList").querySelector(".collector-retired")?.open;
   const onlineCount = topologySites.filter((site) => site.connected).length;
   $("collectorOnlineCount").textContent = `${onlineCount} / ${topologySites.length}`;
   $("collectorNodeList").innerHTML = topologySites.length ? topologySites.map((site) => {
@@ -491,9 +492,43 @@ function renderCollectorNodes() {
       <div class="collector-node-foot"><span>${contactAt ? `心跳 ${relativeTime(contactAt)}` : site.is_current ? "本机状态实时读取" : "尚未收到心跳"}</span><span>${escapeHtml(site.id)}</span></div>
       ${state.key === "waiting" && !site.is_current ? `<button class="secondary-action collector-package-action" type="button" data-download-collector-package="${escapeHtml(site.id)}">下载自动安装包</button>` : ""}
       ${topologyCapabilities.diagnostic_logs ? `<button class="secondary-action" type="button" data-collector-diagnostics="${escapeHtml(site.id)}">诊断日志</button>` : ""}
+      ${topologyCapabilities.can_retire_collectors ? `<button class="secondary-action" type="button" data-retire-collector="${escapeHtml(site.id)}" ${site.can_retire ? "" : "disabled"} title="${escapeHtml(uiText(site.assigned_device_count ? "请先转移关联设备" : "请先退出现场采集程序并等待离线"))}">移除采集器</button>` : ""}
       ${error ? `<p class="collector-node-error"><strong>需要检查：</strong>${escapeHtml(error)}</p>` : ""}
     </article>`;
   }).join("") : '<div class="collector-empty">还没有采集器节点。请先添加并激活一台采集器。</div>';
+  const retired = topologyCapabilities.retired_sites || [];
+  if (retired.length) $("collectorNodeList").insertAdjacentHTML("beforeend", `<details class="collector-retired" ${retiredExpanded ? "open" : ""}><summary>${escapeHtml(uiText("已移除采集器"))} (${retired.length})</summary>${retired.map(site => `<p><strong data-i18n-ignore>${escapeHtml(site.name)}</strong> <small data-i18n-ignore>${escapeHtml(site.id)}</small> <span>${escapeHtml(uiText("历史数据保留"))}</span> <button class="secondary-action" type="button" data-collector-diagnostics="${escapeHtml(site.id)}">诊断日志</button></p>`).join("")}</details>`);
+}
+
+function retireCollector(siteId, button) {
+  const site = topologySites.find((item) => String(item.id) === String(siteId));
+  if (!site?.can_retire || button.disabled) return;
+  $("retireCollectorDialog").dataset.siteId = String(siteId);
+  $("retireCollectorName").textContent = `${collectorDisplayName(site)} · ${site.id}`;
+  $("retireCollectorError").textContent = "";
+  $("confirmRetireCollector").disabled = false;
+  $("retireCollectorDialog").showModal();
+}
+
+async function submitRetireCollector(event) {
+  event.preventDefault();
+  const dialog = $("retireCollectorDialog"), button = $("confirmRetireCollector");
+  const siteId = dialog.dataset.siteId;
+  if (!siteId || button.disabled) return;
+  button.disabled = true;
+  try {
+    await api(`/api/admin/sites/${encodeURIComponent(siteId)}/retire`, {method: "POST"});
+    await loadTopologySites(true);
+    dialog.close();
+    showToast(uiText("采集器已移除，历史数据保留。"));
+  } catch (error) {
+    $("retireCollectorError").textContent = uiText(friendlyError(error.message));
+    // Refresh eligibility after a conflict; never leave a stale enabled action.
+    try {
+      await loadTopologySites(true);
+      button.disabled = !topologySites.find(site => String(site.id) === siteId)?.can_retire;
+    } catch (_) { button.disabled = false; }
+  }
 }
 
 function updateManualDeviceSiteHelp() {
@@ -2522,7 +2557,11 @@ function bindEvents() {
   $("closeCollectorDialogBtn").addEventListener("click", closeCollectorDialog);
   $("cancelCollectorBtn").addEventListener("click", closeCollectorDialog);
   $("copyCollectorActivationBtn").addEventListener("click", downloadCollectorActivation);
+  $("retireCollectorForm").addEventListener("submit", submitRetireCollector);
+  $("cancelRetireCollector").addEventListener("click", () => $("retireCollectorDialog").close());
   $("collectorNodeList").addEventListener("click", (event) => {
+    const retireButton = event.target.closest("[data-retire-collector]");
+    if (retireButton) return void retireCollector(retireButton.dataset.retireCollector, retireButton);
     const button = event.target.closest("[data-download-collector-package]");
     if (!button) return;
     downloadCollectorPackage(button.dataset.downloadCollectorPackage, button).catch((error) => {

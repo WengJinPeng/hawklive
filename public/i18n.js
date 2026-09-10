@@ -8,6 +8,16 @@
   // Chinese is the canonical source language. Keeping one source DOM avoids two
   // pages drifting apart while still allowing runtime text to be translated.
   const EN = Object.freeze({
+    "移除采集器": "Remove collector",
+    "移除此采集器？": "Remove this collector?",
+    "移除后停止接收该采集器的数据，历史读数和日志保留。请先备份旧电脑上的未上传记录。": "Data from this collector will no longer be accepted. Historical readings and logs are retained. Back up any unuploaded records on the old computer first.",
+    "采集器已移除，历史数据保留。": "Collector removed. Historical data is retained.",
+    "已移除采集器": "Removed collectors",
+    "历史数据保留": "Historical data retained",
+    "请先转移关联设备": "Transfer assigned devices first",
+    "请先退出现场采集程序并等待离线": "Exit the on-site collector and wait until it is offline",
+    "请先将此采集器关联的设备转移到其他采集器，再移除。": "Transfer assigned devices to another collector before removal.",
+    "采集器仍在线，请先退出现场采集程序，等待离线后再移除。": "The collector is still online. Exit the on-site collector and wait until it is offline.",
     "诊断日志": "Diagnostic logs",
     "采集器诊断日志": "Collector diagnostic logs",
     "仅显示已上传的运行日志。设备离线不影响查看已有日志；采集电脑断网期间的日志需联网后补传。": "Only uploaded operational logs are shown. Existing logs remain available while devices are offline. Logs from an offline collector arrive after reconnection.",

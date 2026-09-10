@@ -686,3 +686,18 @@ continuous collection PC connected to mains power. See
 The first signing key was generated at `~/.config/hawkhive/update-signing-2026.pem` on the release operator's computer; only its public verification key is included in this repository. Back it up using the operator's normal credential storage. Automatic distribution must remain unavailable until actual Windows acceptance is complete; Python and simulated process tests alone do not verify Windows file locking, Task Scheduler or PyInstaller child processes.
 
 Implementation references: [PyInstaller process restart guidance](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html) and [Ed25519 signing and verification](https://cryptography.io/en/latest/hazmat/primitives/asymmetric/ed25519/).
+
+### Retiring an unused cloud collector
+
+Administrators can remove an offline collector with no enabled devices from the
+active node list. Transfer devices first and back up any unuploaded local records.
+The retired entry remains under Removed collectors; historical readings,
+assignment periods, diagnostics and audit records remain intact. Its credentials
+are revoked, and activation, configuration and device restoration cannot target
+it. Retirement and device assignment share a customer lock, and retirement is
+idempotent. Collector names remain reserved for historical identity clarity.
+Windows collector 0.6.2 remains compatible; this is a cloud-only change.
+
+Acceptance: `python -m unittest test_collector_retirement_postgres` with
+`DCP_DEVICE_DELETE_TEST_DATABASE_URL` pointing to a disposable `devicedeleteqa`
+database. Never run these fixtures against production.

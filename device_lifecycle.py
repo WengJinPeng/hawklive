@@ -55,7 +55,8 @@ def register_device_lifecycle(api: Any) -> None:
 
     def validate_target(db, customer_id, device_id, values):
         for table, field, label in [('cleanrooms', 'cleanroom_id', 'Cleanroom'), ('sites', 'site_id', 'Site collector')]:
-            if not db.execute(f'SELECT 1 FROM {table} WHERE customer_id=%s AND id=%s', (customer_id, values[field])).fetchone():
+            active = ' AND retired_at IS NULL' if table == 'sites' else ''
+            if not db.execute(f'SELECT 1 FROM {table} WHERE customer_id=%s AND id=%s{active}', (customer_id, values[field])).fetchone():
                 raise HTTPException(404, f'{label} not found')
         if db.execute('SELECT 1 FROM devices WHERE customer_id=%s AND enabled AND id<>%s AND cleanroom_id=%s AND lower(name)=lower(%s)', (customer_id, device_id, values['cleanroom_id'], values['name'])).fetchone():
             raise HTTPException(409, 'Device name is already in use in this cleanroom')

@@ -53,7 +53,7 @@
     const button = event.target.closest("[data-collector-diagnostics]");
     if (!button) return;
     siteId = button.dataset.collectorDiagnostics;
-    const site = topologySites.find((item) => String(item.id) === siteId);
+    const site = [...topologySites, ...(topologyCapabilities.retired_sites || [])].find((item) => String(item.id) === siteId);
     el("diagnosticsNode").textContent = site ? `${collectorDisplayName(site)} · ${site.hostname || ""} · v${site.version || "—"}` : siteId;
     dialog.showModal();
     load();

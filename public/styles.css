@@ -973,3 +973,7 @@ tbody tr:hover { background: #f7fbfb; }
 .collector-update-summary { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; margin-top: 12px; padding: 10px; background: var(--paper-soft); border-radius: 8px; font-size: 12px; line-height: 1.6; }
 .collector-update-summary small { color: var(--muted); }
 @media (max-width: 640px) { .collector-node-metrics .collector-device-status { grid-column: 1 / -1; } }
+
+.collector-retired { grid-column: 1 / -1; padding: 16px; color: var(--muted, #596f75); }
+.collector-retired summary { cursor: pointer; }
+.collector-retired small { overflow-wrap: anywhere; }

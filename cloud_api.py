@@ -470,7 +470,7 @@ def edge_identity(
             """
             UPDATE sites
             SET active_collector_instance=%s,active_collector_seen_at=now(),updated_at=now()
-            WHERE id=%s AND customer_id=%s
+            WHERE id=%s AND customer_id=%s AND retired_at IS NULL
               AND (
                 active_collector_instance IS NULL
                 OR active_collector_instance=%s
@@ -778,7 +778,7 @@ def create_cloud_collector(
         ).fetchone():
             raise HTTPException(status_code=409, detail="Collector name is already in use")
         count = int(db.execute(
-            "SELECT COUNT(*) FROM sites WHERE customer_id=%s", (customer_id,)
+            "SELECT COUNT(*) FROM sites WHERE customer_id=%s AND retired_at IS NULL", (customer_id,)
         ).fetchone()[0])
         if count >= MAX_COLLECTORS:
             raise HTTPException(
@@ -839,6 +839,9 @@ def claim_collector_activation(
         if row is None:
             raise HTTPException(status_code=401, detail="Activation code is invalid or expired")
         customer_id, site_id = str(row[0]), str(row[1])
+        if db.execute("SELECT 1 FROM sites WHERE id=%s AND customer_id=%s AND retired_at IS NULL FOR UPDATE",
+                      (site_id, customer_id)).fetchone() is None:
+            raise HTTPException(status_code=403, detail="Collector has been removed")
         first_claim = row[2] is None
         if not first_claim and str(row[3] or "") != machine_id:
             raise HTTPException(status_code=401, detail="Activation code has already been used")
@@ -1057,7 +1060,7 @@ def approve_collector_enrollment(
         ).fetchone():
             raise HTTPException(status_code=409, detail="Collector name is already in use")
         count = int(db.execute(
-            "SELECT COUNT(*) FROM sites WHERE customer_id=%s", (customer_id,)
+            "SELECT COUNT(*) FROM sites WHERE customer_id=%s AND retired_at IS NULL", (customer_id,)
         ).fetchone()[0])
         if count >= MAX_COLLECTORS:
             raise HTTPException(
@@ -1139,7 +1142,7 @@ def reissue_collector_activation(
     activation_hash = hashlib.sha256(activation_token.encode("utf-8")).hexdigest()
     with connect() as db:
         site = db.execute(
-            "SELECT name FROM sites WHERE id=%s AND customer_id=%s FOR UPDATE",
+            "SELECT name FROM sites WHERE id=%s AND customer_id=%s AND retired_at IS NULL FOR UPDATE",
             (site_id, customer_id),
         ).fetchone()
         if site is None:
@@ -1393,12 +1396,12 @@ def create_cloud_device(
             raise HTTPException(status_code=404, detail="Cleanroom not found")
         if requested_site_id:
             site = db.execute(
-                "SELECT id FROM sites WHERE id=%s AND customer_id=%s",
+                "SELECT id FROM sites WHERE id=%s AND customer_id=%s AND retired_at IS NULL",
                 (requested_site_id, customer_id),
             ).fetchone()
         else:
             sites = db.execute(
-                "SELECT id FROM sites WHERE customer_id=%s ORDER BY created_at,id LIMIT 2",
+                "SELECT id FROM sites WHERE customer_id=%s AND retired_at IS NULL ORDER BY created_at,id LIMIT 2",
                 (customer_id,),
             ).fetchall()
             if not sites:
@@ -1675,7 +1678,10 @@ def get_admin_sites(
             SELECT
               site.id,site.name,site.config_version,site.last_heartbeat_at,
               site.applied_config_version,site.config_apply_status,
-              site.config_apply_error,site.collector_status,token.last_used_at
+              site.config_apply_error,site.collector_status,token.last_used_at,
+              site.retired_at,site.active_collector_seen_at,
+              (SELECT count(*) FROM devices d WHERE d.customer_id=site.customer_id
+               AND d.site_id=site.id AND d.enabled=true)
             FROM sites AS site
             LEFT JOIN (
               SELECT customer_id,site_id,max(last_used_at) AS last_used_at
@@ -1711,8 +1717,13 @@ def get_admin_sites(
             config_state = "pending"
         else:
             config_state = "awaiting"
+        recent_contact = any(value and now - value.timestamp() <= COLLECTOR_LEASE_SECONDS
+                             for value in (row[3], row[8], row[10]))
         sites.append({
             "id": str(row[0]), "name": str(row[1]),
+            "retired_at": row[9].timestamp() if row[9] else None,
+            "assigned_device_count": int(row[11]),
+            "can_retire": not row[9] and not recent_contact and not int(row[11]),
             "config_version": desired_revision,
             "applied_config_version": applied_revision,
             "config_apply_status": apply_status,
@@ -1746,7 +1757,9 @@ def get_admin_sites(
     return {
         "ok": True,
         "data": {
-            "sites": sites,
+            "sites": [site for site in sites if not site["retired_at"]],
+            "retired_sites": [site for site in sites if site["retired_at"]],
+            "can_retire_collectors": True,
             "max_cleanrooms": MAX_CLEANROOMS,
             "max_active_devices": MAX_ACTIVE_DEVICES,
             "max_collectors": MAX_COLLECTORS,
@@ -1764,6 +1777,40 @@ def get_admin_sites(
             "scope_notice": "可在这里管理本客户的全部采集器节点。",
         },
     }
+
+
+@app.post("/api/admin/sites/{site_id}/retire")
+def retire_collector(site_id: str, user: dict[str, object] = Depends(topology_manager)) -> dict[str, object]:
+    """Remove an unused node from active topology without deleting any history."""
+    customer_id = str(user["customer_id"])
+    with connect() as db:
+        # Serializes with assignment, restoration and enrollment approval.
+        db.execute("SELECT 1 FROM customers WHERE id=%s FOR UPDATE", (customer_id,))
+        site = db.execute(
+            "SELECT name,retired_at,collector_status FROM sites WHERE customer_id=%s AND id=%s FOR UPDATE",
+            (customer_id, site_id),
+        ).fetchone()
+        if site is None:
+            raise HTTPException(404, "Collector site not found")
+        if site[1] is not None:
+            return {"ok": True, "data": {"site_id": site_id, "retired": True}}
+        if db.execute("SELECT 1 FROM devices WHERE customer_id=%s AND site_id=%s AND enabled=true LIMIT 1",
+                      (customer_id, site_id)).fetchone():
+            raise HTTPException(409, "请先将此采集器关联的设备转移到其他采集器，再移除。")
+        if db.execute("""SELECT 1 FROM sites WHERE id=%s AND customer_id=%s AND
+                greatest(last_heartbeat_at,active_collector_seen_at,
+                    (SELECT max(last_used_at) FROM edge_tokens WHERE customer_id=%s AND site_id=%s))
+                > now() - (%s * interval '1 second')""",
+                (site_id, customer_id, customer_id, site_id, COLLECTOR_LEASE_SECONDS)).fetchone():
+            raise HTTPException(409, "采集器仍在线，请先退出现场采集程序，等待离线后再移除。")
+        db.execute("UPDATE sites SET retired_at=now(),updated_at=now() WHERE id=%s AND customer_id=%s", (site_id, customer_id))
+        db.execute("UPDATE edge_tokens SET enabled=false WHERE site_id=%s AND customer_id=%s", (site_id, customer_id))
+        db.execute("UPDATE collector_enrollments SET status='revoked' WHERE site_id=%s AND customer_id=%s", (site_id, customer_id))
+        # Keep diagnostics, readings, device assignments and audit evidence intact.
+        record_configuration_audit(db, customer_id, "customer_user", "collector.retired", "collector", site_id,
+                                   {"name": site[0], "history_retained": True,
+                                    "last_reported_status": site[2]}, str(user["id"]))
+    return {"ok": True, "data": {"site_id": site_id, "retired": True}}
 
 
 @app.get("/api/admin/pending-collectors")
@@ -2015,7 +2062,7 @@ def admin_discovered_devices(
                 latest.firmware_raw,latest.particle_unit_code,latest.particle_unit_label,
                 latest.latency_ms,latest.discovered_at
             FROM latest
-            JOIN sites AS site ON site.id=latest.site_id AND site.customer_id=%s
+            JOIN sites AS site ON site.id=latest.site_id AND site.customer_id=%s AND site.retired_at IS NULL
             WHERE NOT EXISTS (
                 SELECT 1 FROM devices AS device
                 WHERE device.customer_id=%s AND device.site_id=latest.site_id
@@ -2175,12 +2222,12 @@ def apply_customer_config(
         db.execute("SELECT 1 FROM customers WHERE id=%s FOR UPDATE", (customer_id,))
         if forced_site_id:
             site = db.execute(
-                "SELECT id FROM sites WHERE id=%s AND customer_id=%s",
+                "SELECT id FROM sites WHERE id=%s AND customer_id=%s AND retired_at IS NULL",
                 (forced_site_id, customer_id),
             ).fetchone()
         else:
             site = db.execute(
-                "SELECT id FROM sites WHERE customer_id = %s ORDER BY created_at, id LIMIT 1",
+                "SELECT id FROM sites WHERE customer_id = %s AND retired_at IS NULL ORDER BY created_at, id LIMIT 1",
                 (customer_id,),
             ).fetchone()
         if site is None:
@@ -2376,7 +2423,7 @@ def create_discovery_job(
         ).fetchone()
         if site is None:
             site = db.execute(
-                "SELECT id FROM sites WHERE customer_id=%s ORDER BY created_at,id LIMIT 1",
+                "SELECT id FROM sites WHERE customer_id=%s AND retired_at IS NULL ORDER BY created_at,id LIMIT 1",
                 (customer_id,),
             ).fetchone()
         if site is None:
@@ -2639,7 +2686,7 @@ def edge_configuration_payload(identity: dict[str, str]) -> dict[str, object]:
             customer_configuration(identity["customer_id"], db=db), identity["site_id"],
         )
         row = db.execute(
-            "SELECT config_version,name FROM sites WHERE id=%s AND customer_id=%s",
+            "SELECT config_version,name FROM sites WHERE id=%s AND customer_id=%s AND retired_at IS NULL",
             (identity["site_id"], identity["customer_id"]),
         ).fetchone()
     if row is None:
@@ -2657,7 +2704,7 @@ def edge_create_cleanroom(
 ) -> dict[str, object]:
     with connect() as db:
         site_count = int(db.execute(
-            "SELECT COUNT(*) FROM sites WHERE customer_id=%s", (identity["customer_id"],)
+            "SELECT COUNT(*) FROM sites WHERE customer_id=%s AND retired_at IS NULL", (identity["customer_id"],)
         ).fetchone()[0])
     if site_count != 1:
         raise HTTPException(
@@ -2702,7 +2749,7 @@ def edge_heartbeat(
         raise HTTPException(status_code=422, detail="Online device count exceeds total devices")
     with connect() as db:
         row = db.execute(
-            "SELECT config_version FROM sites WHERE id=%s AND customer_id=%s FOR UPDATE",
+            "SELECT config_version FROM sites WHERE id=%s AND customer_id=%s AND retired_at IS NULL FOR UPDATE",
             (identity["site_id"], identity["customer_id"]),
         ).fetchone()
         if row is None:

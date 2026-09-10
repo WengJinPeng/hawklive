@@ -303,6 +303,16 @@
       </form>
     </dialog>
 
+    <dialog id="retireCollectorDialog" class="management-dialog" aria-labelledby="retireCollectorTitle">
+      <form id="retireCollectorForm">
+        <header><h2 id="retireCollectorTitle">移除此采集器？</h2></header>
+        <p id="retireCollectorName" data-i18n-ignore></p>
+        <p>移除后停止接收该采集器的数据，历史读数和日志保留。请先备份旧电脑上的未上传记录。</p>
+        <p id="retireCollectorError" role="alert"></p>
+        <footer><button id="cancelRetireCollector" type="button" class="secondary-action">取消</button><button id="confirmRetireCollector" type="submit" class="danger-button">移除采集器</button></footer>
+      </form>
+    </dialog>
+
     <dialog id="cleanroomDialog" class="management-dialog">
       <form id="cleanroomForm" method="dialog">
         <header><div><p class="eyebrow">新建车间</p><h2>新建车间</h2><p>车间建立后会使用一套安全的默认报警策略，之后可在“设置”中调整。</p></div><button id="closeCleanroomDialogBtn" class="dialog-close" type="button" aria-label="关闭新建车间">×</button></header>

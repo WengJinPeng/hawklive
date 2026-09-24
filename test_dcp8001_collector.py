@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import socket
 from contextlib import redirect_stderr
 from io import StringIO
 from unittest.mock import MagicMock, call, patch
@@ -40,6 +41,29 @@ class FakeSocket:
 
 class Dcp8001ProtocolTests(unittest.TestCase):
     """Examples taken from the DCP-8001-G communication protocol."""
+
+    @patch("dcp8001_collector.socket.create_connection")
+    def test_keepalive_is_enabled_and_optional_tuning_can_be_unsupported(self, connect):
+        sock = connect.return_value
+        with patch.object(socket, "SIO_KEEPALIVE_VALS", 0x98000004, create=True):
+            sock.ioctl.side_effect = OSError("optional tuning unsupported")
+            with Dcp8001TcpClient("192.0.2.1"):
+                sock.setsockopt.assert_any_call(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                sock.ioctl.assert_called_once_with(socket.SIO_KEEPALIVE_VALS, (1, 30000, 10000))
+        sock.close.assert_called_once_with()
+
+    @patch("dcp8001_collector.socket.create_connection")
+    def test_socket_setup_failure_does_not_leak_connection(self, connect):
+        connect.return_value.settimeout.side_effect = OSError("setup failed")
+        with self.assertRaisesRegex(OSError, "setup failed"):
+            Dcp8001TcpClient("192.0.2.1")
+        connect.return_value.close.assert_called_once_with()
+
+    def test_truncated_register_payload_is_rejected(self):
+        client = object.__new__(Dcp8001TcpClient)
+        client._request_pdu = MagicMock(return_value=bytes.fromhex("03 04 00 01"))
+        with self.assertRaisesRegex(ValueError, "payload does not match"):
+            client.read_holding_registers(0, 2)
 
     def test_read_0_5_um_command_crc(self) -> None:
         command = append_crc(bytes.fromhex("01 03 00 02 00 02"))

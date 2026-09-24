@@ -65,6 +65,15 @@ PARTICLE_UNIT_LABELS = {
 }
 REQUIRED_PARTICLE_UNIT_CODE = 1
 PROTOCOL_PROFILE = "dpc8001-g-protocol-2025-06-04"
+# Leave the embedded TCP/serial bridge time to finish each exchange. This is a
+# conservative client throttle, not a manufacturer-specified TCP heartbeat.
+TCP_REQUEST_INTERVAL = 0.05
+TCP_REALTIME_REQUEST_COUNT = 14
+
+
+def tcp_sample_timeout(timeout: float, connect_settle: float = 1.0,
+                       request_interval: float = TCP_REQUEST_INTERVAL) -> float:
+    return connect_settle + TCP_REALTIME_REQUEST_COUNT * (timeout + request_interval)
 
 
 class UnsupportedParticleUnitError(ValueError):
@@ -269,12 +278,15 @@ class Dcp8001TcpClient:
         slave: int = 1,
         timeout: float = 1.0,
         connect_settle: float = 1.0,
+        request_interval: float = TCP_REQUEST_INTERVAL,
     ) -> None:
         self.host = host
         self.tcp_port = tcp_port
         self.slave = slave
         self.timeout = timeout
         self.connect_settle = max(0.0, connect_settle)
+        self.request_interval = max(0.0, request_interval)
+        self._next_request_at = 0.0
         # Avoid reusing transaction 1 on every short-lived TCP connection. This
         # is standard-compatible and reduces collisions with cached stale frames.
         self.transaction_id = secrets.randbits(16)
@@ -282,15 +294,49 @@ class Dcp8001TcpClient:
         self.diagnostic_stage = "connected"
         self.request_sent = False
         self._read_deadline: float | None = None
+        self._cancelled = False
+        self.request_register: int | None = None
+        self.request_quantity: int | None = None
         self.sock = socket.create_connection((host, tcp_port), timeout=timeout)
-        self.sock.settimeout(timeout)
+        try:
+            self.sock.settimeout(timeout)
+            self._configure_keepalive()
+        except Exception:
+            self.sock.close()
+            raise
+
+    def _configure_keepalive(self) -> None:
+        # OS probes detect abandoned paths even between long polling intervals.
+        # They do not replace Modbus reads or prove that the device is healthy.
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except OSError:
+            return
+        if hasattr(socket, "SIO_KEEPALIVE_VALS"):
+            try:
+                self.sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 30000, 10000))
+            except OSError:
+                pass
+        for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPALIVE", 30),
+                            ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
+            option = getattr(socket, name, None)
+            if option is not None:
+                try:
+                    self.sock.setsockopt(socket.IPPROTO_TCP, option, value)
+                except OSError:
+                    pass  # Optional tuning varies across Windows/macOS/Linux.
 
     def close(self) -> None:
+        self.cancel_pending_read()
+        self.sock.close()
+
+    def cancel_pending_read(self) -> None:
+        """Wake a blocking recv during collector shutdown; never send a write."""
+        self._cancelled = True
         try:
             self.sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass  # A disconnected peer still needs the local descriptor closed.
-        self.sock.close()
 
     def __enter__(self) -> Dcp8001TcpClient:
         return self
@@ -304,10 +350,19 @@ class Dcp8001TcpClient:
 
     def _request_pdu(self, pdu: bytes) -> bytes:
         self.request_sent = False
+        if getattr(self, "_cancelled", False):
+            raise ConnectionAbortedError("Modbus TCP session is closed")
         self.diagnostic_stage = "initial_settle"
         if self._first_request:
             self._first_request = False
             self._discard_initial_data()
+        self.diagnostic_stage = "request_interval"
+        pause = max(0.0, getattr(self, "_next_request_at", 0.0) - time.monotonic())
+        read_deadline = getattr(self, "_read_deadline", None)
+        if read_deadline is not None and time.monotonic() + pause >= read_deadline:
+            raise TimeoutError("Timed out reading complete Modbus TCP sample")
+        if pause:
+            time.sleep(pause)
         transaction_id = self._next_transaction_id()
         length = len(pdu) + 1
         header = (
@@ -357,6 +412,7 @@ class Dcp8001TcpClient:
                 self.diagnostic_stage = "response_validated"
                 return body
         finally:
+            self._next_request_at = time.monotonic() + getattr(self, "request_interval", TCP_REQUEST_INTERVAL)
             self.sock.settimeout(self.timeout)
 
     def _discard_initial_data(self) -> None:
@@ -389,6 +445,8 @@ class Dcp8001TcpClient:
         return bytes(chunks)
 
     def read_holding_registers(self, start: int, quantity: int) -> list[int]:
+        self.request_register = start
+        self.request_quantity = quantity
         pdu = bytes(
             (
                 0x03,
@@ -401,9 +459,13 @@ class Dcp8001TcpClient:
         response = self._request_pdu(pdu)
         if response[0] != 0x03:
             raise ValueError(f"Unexpected function code: 0x{response[0]:02X}")
+        if len(response) < 2:
+            raise ValueError("Truncated Modbus TCP register response")
         byte_count = response[1]
         if byte_count != quantity * 2:
             raise ValueError(f"Unexpected byte count: got {byte_count}, expected {quantity * 2}")
+        if len(response) != 2 + byte_count:
+            raise ValueError("Modbus TCP register payload does not match byte count")
         return registers_from_data(response[2 : 2 + byte_count])
 
     def write_single_register(self, address: int, value: int) -> None:
@@ -430,11 +492,16 @@ class Dcp8001TcpClient:
         return validate_particle_unit(self.read_holding_registers(133, 1))
 
     def read_realtime(self) -> Dcp8001Reading:
-        # Fourteen small requests make one sample. Per-request timeouts alone
-        # allow a degraded gateway to occupy a worker for fourteen timeouts.
-        self._read_deadline = time.monotonic() + self.timeout * 2 + self.connect_settle
+        # Budget all fourteen requests and the intentional gaps. The former
+        # two-request budget discarded valid slow samples and churned sessions.
+        self._read_deadline = time.monotonic() + tcp_sample_timeout(
+            self.timeout, self.connect_settle, getattr(self, "request_interval", TCP_REQUEST_INTERVAL),
+        )
         try:
             return self._read_realtime_sample()
+        except Exception:
+            self.close()  # Never reuse a partially consumed response stream.
+            raise
         finally:
             self._read_deadline = None
 

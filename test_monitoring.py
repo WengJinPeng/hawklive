@@ -633,6 +633,7 @@ class MonitoringServiceTests(unittest.TestCase):
         client.request_sent = False
         client.read_realtime.side_effect = ConnectionError("Socket closed while waiting for initial Modbus TCP data")
         self.service._poll_device(room, device)
+        self.service._next_poll_at[device["id"]] = 0  # Cooldown elapsed.
         self.service._poll_device(room, device)
         failures = [message for _level, event, message in self.logs if event == "device_offline"]
         self.assertEqual(len(failures), 1)
@@ -641,6 +642,7 @@ class MonitoringServiceTests(unittest.TestCase):
         self.assertEqual(self.service._device_failures[device["id"]], 2)
         client.read_realtime.side_effect = None
         client.read_realtime.return_value = self.reading(time.time(), 500)
+        self.service._next_poll_at[device["id"]] = 0
         self.service._poll_device(room, device)
         recovered = [message for _level, event, message in self.logs if event == "device_recovered"]
         self.assertEqual(len(recovered), 1)
@@ -648,6 +650,7 @@ class MonitoringServiceTests(unittest.TestCase):
         self.assertTrue(self.service.latest[device["id"]]["online"])
         self.service._device_failures[device["id"]] = 1
         self.service.add_log = MagicMock(side_effect=OSError("log disk unavailable"))
+        self.service._next_poll_at[device["id"]] = 0
         self.service._poll_device(room, device)
         self.assertTrue(self.service.latest[device["id"]]["online"])
 

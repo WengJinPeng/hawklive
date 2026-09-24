@@ -435,10 +435,13 @@ class AutomatedOnboardingSecurityTests(unittest.TestCase):
         db = MagicMock()
         db.execute.return_value.fetchone.side_effect = [
             ("customer-001", "collector-001", object(), "1" * 32),
+            (1,),  # Active collector check precedes the durable-token check.
             (1,),
             ("customer-001", "collector-001", object(), "1" * 32),
             (1,),
+            (1,),
             ("customer-001", "collector-001", object(), "1" * 32),
+            (1,),
         ]
         connect.return_value.__enter__.return_value = db
         with patch.dict(os.environ, {"DCP_ACTIVATION_SECRET": self.ACTIVATION_SECRET}):

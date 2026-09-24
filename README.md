@@ -241,7 +241,12 @@ Runtime defaults:
 - Device polling and alarm evaluation: every 10 seconds.
 - Up to 8 devices are polled concurrently; each completed worker can schedule its
   next device without waiting for slow peers. Failed connections are closed and
-  retried after 2, 4, 8, then at most 10 seconds by default (plus I/O time).
+  retried once after 10 seconds. If that retry fails, recovery probes wait 60,
+  then 120 seconds by default (plus I/O time). Each probe makes only one connection
+  attempt; there is no inner retry loop. Automatic probes continue so a device
+  can recover without restarting the collector. A successful poll resets backoff.
+  Manual tests of configured devices share the same lock and failure cooldown;
+  repeated clicks cannot open more sockets or extend the cooldown.
 - A collector accepts up to 100 active devices by default. Override the bounded
   worker and capacity settings with `DCP_POLL_WORKERS`,
   `DCP_OFFLINE_BACKOFF_MAX`, and `DCP_MAX_ACTIVE_DEVICES`.
@@ -254,16 +259,25 @@ Runtime defaults:
 - Alarm clearing: 5 continuous minutes back inside all configured limits.
 
 Wi-Fi recovery is automatic while the same configured endpoint becomes available
-again. Each complete TCP sample has a deadline of twice `DCP_DEVICE_TIMEOUT`
-plus the initial connection settle period; individual register requests also
-retain their own timeout. Removed/disabled registrations release cached sockets.
-Existing installations that explicitly set `DCP_OFFLINE_BACKOFF_MAX=300` must
-change that override to `10` to use the faster recovery policy.
+again. Each complete TCP sample budgets all 14 register requests, each with its
+own `DCP_DEVICE_TIMEOUT`, plus the initial settle period and 50 ms gaps between
+exchanges. With the default 10-second timeout, the complete-read ceiling is 141.7
+seconds after connecting; an unanswered request still fails after 10 seconds.
+Shutdown interrupts pending reads instead of waiting for that ceiling. Healthy
+TCP sessions are reused with OS keepalive enabled; local database/alarm failures
+do not force reconnection. Removed/disabled registrations release cached sockets.
+`DCP_OFFLINE_BACKOFF_MAX` controls the recovery-probe ceiling (default 120 seconds,
+minimum 60); legacy values of 10 cannot disable the cooldown. Existing explicit
+`DCP_DEVICE_TIMEOUT` values are preserved; review a 5-second override if valid
+responses on the field network take longer. These settings belong to the Windows
+collector process; changing only the cloud server does not update edge behavior.
 
 The upload queue can replay readings already saved on the collector. It cannot
 reconstruct measurements that were never received while the device was offline;
 the current protocol integration has no confirmed device-history replay API.
 See [Wi-Fi recovery evidence and field checks](WIFI-RECOVERY-2026-09-09.md).
+The later [connection stability repair](DEVICE-LINK-FIX-2026-09-17.md) supersedes
+the earlier two-request sample deadline and records the remaining field checks.
 
 ## Customer Login
 
@@ -606,7 +620,7 @@ separately so clock skew or offline replay cannot make old data look current.
 - First/changed device failures are logged immediately; identical repeated failures
   are summarized at five-minute intervals, and recovery logs include total failed
   attempts. Details include device ID, endpoint, elapsed time, retry delay and
-  `stage`: `connect`, `initial_settle`, `send_request`, `response_header`,
+  `stage`: `connect`, `initial_settle`, `request_interval`, `send_request`, `response_header`,
   `response_body`, or `response_validated`. `request_sent=False` means no request
   was sent for that transaction; `None` means transmission outcome is uncertain;
   `True` means the OS accepted the request bytes, not that the device processed them.

@@ -52,9 +52,9 @@ def _env_enabled(name: str, default: bool = False) -> bool:
 class MonitorOptions:
     poll_seconds: float = _env_float("DCP_POLL_SECONDS", 10.0)
     record_seconds: float = _env_float("DCP_RECORD_SECONDS", 120.0)
-    device_timeout: float = _env_float("DCP_DEVICE_TIMEOUT", 5.0)
+    device_timeout: float = _env_float("DCP_DEVICE_TIMEOUT", 10.0)
     poll_workers: int = max(1, min(_env_int("DCP_POLL_WORKERS", 8), 32))
-    offline_backoff_max: float = max(10.0, _env_float("DCP_OFFLINE_BACKOFF_MAX", 10.0))
+    offline_backoff_max: float = max(60.0, _env_float("DCP_OFFLINE_BACKOFF_MAX", 120.0))
     demo: bool = _env_enabled("DCP_DEMO_MODE")
 
 
@@ -932,9 +932,9 @@ class MonitoringService:
             raise ValueError("Slave ID must be between 1 and 247")
 
         endpoint = (str(address), tcp_port, slave)
-        configured_device = next(
+        configured = next(
             (
-                device
+                (room, device)
                 for room in self.configuration()
                 for device in room["devices"]
                 if (
@@ -944,14 +944,24 @@ class MonitoringService:
             None,
         )
         started = time.monotonic()
-        if configured_device:
+        if configured:
+            room, configured_device = configured
             device_id = str(configured_device["id"])
-            try:
-                with self._io_lock_for_device(device_id):
-                    reading = self._client_for_device(configured_device).read_realtime()
-            except Exception:
-                self._close_device_client(device_id)
-                raise
+            with diagnostic_scope(room.get("customer_id"), configured_device.get("site_id")), \
+                    self._io_lock_for_device(device_id):
+                self._check_reconnect_cooldown(device_id)
+                client = None
+                try:
+                    client = self._client_for_device(configured_device)
+                    reading = client.read_realtime()
+                except Exception as exc:
+                    self._close_device_client(device_id)
+                    self._device_read_failed(room, configured_device, client, exc, started)
+                    raise
+                # Keep recovery persistence in the polling path. A successful
+                # manual read lets it run immediately on this same session.
+                with self._lock:
+                    self._next_poll_at[device_id] = time.monotonic()
         else:
             client = Dcp8001TcpClient(
                 host=endpoint[0], tcp_port=tcp_port, slave=slave,
@@ -987,6 +997,10 @@ class MonitoringService:
 
     def stop(self) -> None:
         self._stop.set()
+        with self._client_lock:
+            clients = [client for _endpoint, client in self._device_clients.values()]
+        for client in clients:
+            client.cancel_pending_read()
         if self._thread:
             self._thread.join(
                 timeout=max(
@@ -998,6 +1012,7 @@ class MonitoringService:
 
     def _client_for_device(self, device: dict[str, object]) -> Dcp8001TcpClient:
         device_id = str(device["id"])
+        self._check_reconnect_cooldown(device_id)
         endpoint = (
             str(device["host"]),
             int(device["tcpPort"]),
@@ -1119,7 +1134,33 @@ class MonitoringService:
 
     def _poll_device(self, room: dict[str, object], device: dict[str, object]) -> None:
         with diagnostic_scope(room.get("customer_id"), device.get("site_id")):
-            self._poll_device_scoped(room, device)
+            # Publish both failure and cooldown before a queued connection test
+            # can enter. Otherwise it can create a new socket during backoff.
+            with self._io_lock_for_device(str(device["id"])):
+                if self._stop.is_set() or self._reconnect_remaining(str(device["id"])) > 0:
+                    return
+                self._poll_device_scoped(room, device)
+
+    def _reconnect_remaining(self, device_id: str) -> float:
+        with self._lock:
+            if not self._device_failures.get(device_id):
+                return 0.0
+            return max(0.0, self._next_poll_at.get(device_id, 0.0) - time.monotonic())
+
+    def _check_reconnect_cooldown(self, device_id: str) -> None:
+        remaining = self._reconnect_remaining(device_id)
+        if remaining > 0:
+            raise ConnectionError(f"Device reconnect cooling down; retry in {remaining:.1f} seconds")
+
+    def _reconnect_delay(self, failure_count: int) -> float:
+        # One ordinary retry after 10 seconds. If that fails, leave the gateway
+        # quiet for at least a minute, then make single, bounded recovery probes.
+        # Never give up permanently: unattended collectors must recover after
+        # the network/device returns. Old 10-second caps cannot disable cooldown.
+        if failure_count == 1:
+            return 10.0
+        return min(60.0 * (2 ** min(failure_count - 2, 8)),
+                   max(60.0, self.options.offline_backoff_max))
 
     def _poll_device_scoped(self, room: dict[str, object], device: dict[str, object]) -> None:
         started = time.monotonic()
@@ -1133,9 +1174,27 @@ class MonitoringService:
             else:
                 device_id = str(device["id"])
                 with self._io_lock_for_device(device_id):
-                    client = self._client_for_device(device)
-                    reading = client.read_realtime()
+                    try:
+                        client = self._client_for_device(device)
+                        if self._stop.is_set():
+                            self._close_device_client(device_id)
+                            return
+                        reading = client.read_realtime()
+                    except Exception:
+                        # Evict the failed session before releasing the I/O lock.
+                        # Otherwise a connection test can reuse it, or this worker
+                        # can close a replacement created by another reader.
+                        self._close_device_client(device_id)
+                        raise
                 source = "device"
+        except Exception as exc:
+            if not self._stop.is_set():
+                self._device_read_failed(room, device, client, exc, started)
+            return
+
+        # Disk/alarm errors must not churn a healthy embedded gateway session.
+        # Only publish a new sample after its alarm evaluation succeeds.
+        try:
             data = reading if isinstance(reading, dict) else reading.__dict__
             data = dict(data)
             data.update(
@@ -1159,8 +1218,14 @@ class MonitoringService:
                 first_read = not previous
                 recovered_failures = self._device_failures.get(device_id, 0)
             now = float(data["timestamp"])
-            if first_read or recovered_failures or changed or now - self.last_recorded.get(device_id, 0) >= self.options.record_seconds:
-                self._persist_sample(data)
+            needs_save = (first_read or recovered_failures or changed or previous.get("storage_error")
+                          or now - self.last_recorded.get(device_id, 0) >= self.options.record_seconds)
+            if needs_save:
+                try:
+                    self._persist_sample(data)
+                except Exception as exc:
+                    data["storage_error"] = str(exc)
+                    self._log_diagnostic("ERROR", "device_sample_save_failed", f"device={device_id}: {exc}")
             with self._lock:
                 self.latest[str(device["id"])] = data
                 self._device_failures.pop(str(device["id"]), None)
@@ -1175,52 +1240,60 @@ class MonitoringService:
                              f"recovered_after_failures={recovered_failures} poll_seconds={self.options.poll_seconds} "
                              f"last_success_at={previous.get('last_reading_at')} recovered_at={now}")
         except Exception as exc:
-            device_id = str(device["id"])
-            self._close_device_client(device_id)
+            self._log_diagnostic("ERROR", "device_sample_processing_failed", f"device={device_id}: {exc}")
             with self._lock:
-                failure_count = self._device_failures.get(device_id, 0) + 1
-                self._device_failures[device_id] = failure_count
-                delay = min(
-                    min(2.0, max(1.0, self.options.poll_seconds)) * (2 ** min(failure_count - 1, 8)),
-                    self.options.offline_backoff_max,
-                )
-                self._next_poll_at[device_id] = time.monotonic() + delay
-                previous = self.latest.get(device_id, {})
-                self.latest[device_id] = {
-                    **previous,
-                    "cleanroom_id": room["id"],
-                    "cleanroom": room["name"],
-                    "device_id": device_id,
-                    "device": device["name"],
-                    "host": device["host"],
-                    "online": False,
-                    "error": str(exc),
-                    "timestamp": time.time(),
-                    "connection_checked_at": time.time(),
-                    "failure_count": failure_count,
-                    "retry_at": time.time() + delay,
-                }
-            # Save the last actually received sample at its original timestamp.
-            # Repeated failures must neither duplicate it nor invent outage values.
-            if previous.get("online") and previous.get("source") == "device":
-                try:
-                    self._persist_sample(previous)
-                except Exception as storage_exc:
-                    self._log_diagnostic("ERROR", "device_sample_save_failed", f"device={device_id}: {storage_exc}")
-            # First/change immediately; repeated identical errors summarized every
-            # five minutes. Recovery always records the total failed attempts.
-            now = time.monotonic()
-            previous_error, logged_at, logged_count = self._failure_log_state.get(device_id, ("", 0.0, 0))
-            error = str(exc)
-            if failure_count == 1 or error != previous_error or now - logged_at >= 300:
-                self._failure_log_state[device_id] = (error, now, failure_count)
-                self._log_diagnostic("ERROR", "device_offline",
-                             f"{device['name']}: {error}; device={device_id} endpoint={endpoint} "
-                             f"stage={getattr(client, 'diagnostic_stage', 'connect')} "
-                             f"request_sent={getattr(client, 'request_sent', False)} "
-                             f"elapsed_ms={round((now-started)*1000)} failures={failure_count} "
-                             f"occurrences={failure_count-logged_count if error == previous_error else 1} "
-                             f"retry_seconds={delay:g}")
+                self._next_poll_at[device_id] = time.monotonic() + max(0.1, self.options.poll_seconds)
+
+    def _device_read_failed(
+        self, room: dict[str, object], device: dict[str, object],
+        client: Dcp8001TcpClient | None, exc: Exception, started: float,
+    ) -> None:
+        device_id = str(device["id"])
+        endpoint = f"{device['host']}:{device['tcpPort']}/slave={device['slave']}"
+        with self._lock:
+            failure_count = self._device_failures.get(device_id, 0) + 1
+            self._device_failures[device_id] = failure_count
+            delay = self._reconnect_delay(failure_count)
+            self._next_poll_at[device_id] = time.monotonic() + delay
+            previous = self.latest.get(device_id, {})
+            self.latest[device_id] = {
+                **previous,
+                "cleanroom_id": room["id"],
+                "cleanroom": room["name"],
+                "device_id": device_id,
+                "device": device["name"],
+                "host": device["host"],
+                "online": False,
+                "error": str(exc),
+                "timestamp": time.time(),
+                "connection_checked_at": time.time(),
+                "failure_count": failure_count,
+                "retry_at": time.time() + delay,
+            }
+        # Save the last actually received sample at its original timestamp.
+        # Repeated failures must neither duplicate it nor invent outage values.
+        if previous.get("online") and previous.get("source") == "device":
+            try:
+                self._persist_sample(previous)
+            except Exception as storage_exc:
+                self._log_diagnostic("ERROR", "device_sample_save_failed", f"device={device_id}: {storage_exc}")
+        # First/change immediately; repeated identical errors summarized every
+        # five minutes. Recovery always records the total failed attempts.
+        now = time.monotonic()
+        previous_error, logged_at, logged_count = self._failure_log_state.get(device_id, ("", 0.0, 0))
+        error = str(exc)
+        if failure_count == 1 or error != previous_error or now - logged_at >= 300:
+            self._failure_log_state[device_id] = (error, now, failure_count)
+            self._log_diagnostic("ERROR", "device_offline",
+                         f"{device['name']}: {error}; device={device_id} endpoint={endpoint} "
+                         f"stage={getattr(client, 'diagnostic_stage', 'connect')} "
+                         f"request_sent={getattr(client, 'request_sent', False)} "
+                         f"register={getattr(client, 'request_register', None)} "
+                         f"quantity={getattr(client, 'request_quantity', None)} "
+                         f"elapsed_ms={round((now-started)*1000)} failures={failure_count} "
+                         f"occurrences={failure_count-logged_count if error == previous_error else 1} "
+                         f"retry_seconds={delay:g} device_timeout={self.options.device_timeout:g} "
+                         f"recovery_mode={'retry' if failure_count == 1 else 'cooldown'}")
 
     def _persist_sample(self, data: dict[str, object]) -> None:
         device_id = str(data["device_id"])

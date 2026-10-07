@@ -48,8 +48,17 @@ def registration_failure(exc: Exception) -> str:
             return "registration_rejected"
         return "cloud_unavailable" if exc.code >= 500 or exc.code == 429 else "registration_failed"
     reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        code = getattr(reason, "verify_code", None)
+        if code in (2, 18, 19, 20, 21):
+            return "tls_untrusted_certificate"
+        if code in (9, 10):
+            return "tls_certificate_time"
+        if code in (62, 64):
+            return "tls_hostname_mismatch"
+        return "tls_certificate_invalid"
     if isinstance(reason, ssl.SSLError):
-        return "tls_failed"
+        return "tls_handshake_failed"
     if isinstance(exc, urllib.error.URLError) or isinstance(reason, (TimeoutError, ConnectionError)):
         return "network_failed"
     return "registration_failed"
@@ -70,6 +79,11 @@ def startup_message(data_dir: Path, since: float) -> str:
     messages = {
         "pending": "本机已提交登记，正在等待管理员批准。请联系管理员在云端批准本机，无需重新安装。",
         "network_failed": "本机连接云端失败。请检查网线或 Wi-Fi，并确认这台电脑能打开云端网站。恢复连接后会自动重试，无需重新安装。",
+        "tls_untrusted_certificate": "本机后台未能验证云端证书信任链。程序已自带可信根证书；仍出现时，请将此提示发给管理员检查网络代理或安全软件使用的证书，无需反复校准时间。",
+        "tls_certificate_time": "连接使用的证书尚未生效或已过期。请确认电脑时间；已同步仍出现时，请联系管理员检查云端或网络代理证书。",
+        "tls_hostname_mismatch": "连接使用的证书与云端地址不匹配。请联系管理员检查云端地址、网络代理或 DNS 设置。",
+        "tls_certificate_invalid": "连接使用的证书未通过校验。请将此提示发给管理员检查证书链或网络代理证书。",
+        "tls_handshake_failed": "与云端的加密握手中断或协议协商失败。请检查网络连接；持续出现时，请联系管理员检查网络或安全软件的拦截记录。",
         "tls_failed": "本机与云端的安全连接失败。请先校准电脑日期和时间；仍未恢复时，将此提示发给管理员检查证书。",
         "registration_rejected": "云端未接受本机的登记凭据。请联系管理员检查登记权限或获取新的安装包，勿反复安装同一份包。",
         "cloud_blocked": "云端的访问保护规则拦截了本机请求。请将此提示发给管理员检查云端访问策略，无需反复安装。",
@@ -82,7 +96,7 @@ def startup_message(data_dir: Path, since: float) -> str:
         "port_in_use": "本机采集服务需要的端口已被占用。请将此提示发给管理员处理，勿自行关闭不认识的程序。",
         "worker_exited": "后台采集程序已退出，系统正在尝试重新启动。若持续出现，请将此提示发给管理员。",
     }
-    state = state if state in messages else "startup_unconfirmed"
+    state = state if isinstance(state, str) and state in messages else "startup_unconfirmed"
     details = messages.get(state, "尚未检测到后台采集程序就绪，具体原因未确认。请保持电脑开机，并将此提示发给管理员；管理员需检查自动启动任务。")
     try:
         usage = shutil.disk_usage(data_dir)

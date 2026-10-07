@@ -77,6 +77,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", help="Override the local runtime data directory")
     parser.add_argument("--activation", help="Use a downloaded one-time activation file")
     parser.add_argument("--enrollment", help="Use a reusable customer enrollment file")
+    parser.add_argument("--verify-tls-bundle", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--supervise", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--managed-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--install-elevated", action="store_true", help=argparse.SUPPRESS)
@@ -88,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if not 1 <= args.port <= 65535:
         raise SystemExit("Port must be between 1 and 65535")
+    if args.verify_tls_bundle:
+        from cloud_tls import verify_packaged_roots
+        print(f"Verified packaged TLS roots: {verify_packaged_roots()}")
+        return 0
     if args.supervise:
         from collector_updater import run_supervisor
         return run_supervisor(Path(args.data_dir).resolve(), args.port)
@@ -112,7 +117,9 @@ def main(argv: list[str] | None = None) -> int:
             deadline = time.monotonic() + 120
             while time.monotonic() < deadline:
                 status = fresh_startup(installed_data_dir, install_started)
-                if status.get("state") == "pending":
+                state = status.get("state")
+                state = state if isinstance(state, str) else ""
+                if state == "pending":
                     message = "自动采集器安装成功。\n\n本机已提交到云端，正在等待管理员批准。请联系管理员在云端批准本机，无需重新安装。"
                     ctypes.windll.user32.MessageBoxW(None, message, "HawkHive 等待确认", 0x40)
                     return 0
@@ -120,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
                     message = "自动采集器安装并启动成功。现在可以回到云端等待设备出现。"
                     ctypes.windll.user32.MessageBoxW(None, message, "HawkHive 安装成功", 0x40)
                     return 0
-                if status.get("state") in {
+                if state.startswith("tls_") or state in {
                     "network_failed", "tls_failed", "registration_rejected",
                     "cloud_unavailable", "cloud_blocked", "registration_failed", "storage_full",
                     "permission_failed", "port_in_use",

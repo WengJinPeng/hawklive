@@ -11,6 +11,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from cloud_tls import cloud_urlopen
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,7 +21,7 @@ from uuid import UUID, uuid4
 from device_discovery import scan_modbus_networks
 from collector_diagnostics import init_queue, enqueue, prune_queue, redact, diagnostic_scope
 
-COLLECTOR_VERSION = "0.6.5"
+COLLECTOR_VERSION = "0.6.6"
 
 
 def canonical_uuid(value: object) -> str:
@@ -190,7 +192,7 @@ class CloudSyncService:
     def _request_json(self, request: urllib.request.Request) -> dict[str, object]:
         self.last_attempt_at = time.time()
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with cloud_urlopen(request, timeout=20) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError:
             self.last_contact_at = time.time()

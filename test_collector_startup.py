@@ -28,7 +28,7 @@ class StartupTests(unittest.TestCase):
 
     def test_error_classification_never_copies_tokens(self):
         self.assertEqual(registration_failure(urllib.error.HTTPError('https://secret/?token=abc', 403, 'secret', {}, None)), 'registration_rejected')
-        self.assertEqual(registration_failure(urllib.error.URLError(ssl.SSLError('secret'))), 'tls_failed')
+        self.assertEqual(registration_failure(urllib.error.URLError(ssl.SSLError('secret'))), 'tls_handshake_failed')
         self.assertEqual(registration_failure(urllib.error.URLError(OSError('secret'))), 'network_failed')
         self.assertEqual(registration_failure(ValueError('secret')), 'registration_failed')
 
@@ -72,3 +72,9 @@ class StartupTests(unittest.TestCase):
         import io
         error = urllib.error.HTTPError('https://example.test', 403, 'Forbidden', {}, io.BytesIO(b'error code: 1010'))
         self.assertEqual(registration_failure(error), 'cloud_blocked')
+
+    def test_certificate_errors_produce_specific_guidance(self):
+        for code, state in [(20, 'tls_untrusted_certificate'), (10, 'tls_certificate_time'), (62, 'tls_hostname_mismatch'), (7, 'tls_certificate_invalid')]:
+            error = ssl.SSLCertVerificationError(1, 'secret')
+            error.verify_code = code
+            self.assertEqual(registration_failure(urllib.error.URLError(error)), state)

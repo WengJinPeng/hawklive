@@ -46,14 +46,14 @@ if ($LASTEXITCODE -ne 0) {
 
 Push-Location $root
 try {
-    & $python -m PyInstaller --noconfirm --clean --onedir `
+    & $python -m PyInstaller --collect-data certifi --noconfirm --clean --onedir `
         --name "HawkHive-DPC8001-Collector" `
         --distpath $oneDirOutput --workpath (Join-Path $root "build\pyinstaller-onedir") `
         --add-data "public:public" `
         "windows_launcher.py"
     if ($LASTEXITCODE -ne 0) { throw "One-folder EXE build failed." }
 
-    & $python -m PyInstaller --noconfirm --clean --onefile `
+    & $python -m PyInstaller --collect-data certifi --noconfirm --clean --onefile `
         --name "HawkHive-DPC8001-Collector" `
         --distpath $oneFileOutput --workpath (Join-Path $root "build\pyinstaller-onefile") `
         --add-data "public:public" `

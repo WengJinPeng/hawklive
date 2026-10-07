@@ -9,6 +9,8 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
+
+from cloud_tls import cloud_urlopen
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,7 +132,7 @@ def request_enrollment(
     machine_id: str,
     claim_secret: str,
     *,
-    opener: Callable[..., object] = urllib.request.urlopen,
+    opener: Callable[..., object] = cloud_urlopen,
 ) -> EnrollmentState:
     body = json.dumps(
         {
@@ -179,7 +181,7 @@ def enroll_if_available(
     settings_path: Path,
     explicit: str | None = None,
     *,
-    opener: Callable[..., object] = urllib.request.urlopen,
+    opener: Callable[..., object] = cloud_urlopen,
     environ: dict[str, str] | None = None,
     executable: str | None = None,
 ) -> EnrollmentState | None:

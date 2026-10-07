@@ -11,6 +11,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+from cloud_tls import cloud_ssl_context
 from collector_startup import record_startup
 from collector_settings import load_settings
 from single_instance import SingleInstanceLock
@@ -29,7 +30,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def update_opener():
-    return urllib.request.build_opener(NoRedirect())
+    return urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=cloud_ssl_context()))
 
 
 def download_release(origin: str, release: dict, staged: Path, opener=None) -> None:

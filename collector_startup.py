@@ -36,6 +36,14 @@ def registration_failure(exc: Exception) -> str:
         if cause is None:
             break
     if isinstance(exc, urllib.error.HTTPError):
+        if exc.code == 403:
+            try:
+                body = exc.read(2048).lower()
+                if (b"error code: 1010" in body or b"error code: 1020" in body
+                        or exc.headers.get("cf-mitigated") == "challenge"):
+                    return "cloud_blocked"
+            except (OSError, AttributeError):
+                pass
         if exc.code in (401, 403, 410):
             return "registration_rejected"
         return "cloud_unavailable" if exc.code >= 500 or exc.code == 429 else "registration_failed"
@@ -63,7 +71,8 @@ def startup_message(data_dir: Path, since: float) -> str:
         "pending": "本机已提交登记，正在等待管理员批准。请联系管理员在云端批准本机，无需重新安装。",
         "network_failed": "本机连接云端失败。请检查网线或 Wi-Fi，并确认这台电脑能打开云端网站。恢复连接后会自动重试，无需重新安装。",
         "tls_failed": "本机与云端的安全连接失败。请先校准电脑日期和时间；仍未恢复时，将此提示发给管理员检查证书。",
-        "registration_rejected": "云端未接受本机的登记凭据。请联系管理员获取新的安装包，勿反复安装同一份包。",
+        "registration_rejected": "云端未接受本机的登记凭据。请联系管理员检查登记权限或获取新的安装包，勿反复安装同一份包。",
+        "cloud_blocked": "云端的访问保护规则拦截了本机请求。请将此提示发给管理员检查云端访问策略，无需反复安装。",
         "cloud_unavailable": "云端登记服务暂时不可用。系统会自动重试；持续出现时，请将此提示发给管理员。",
         "registration_failed": "本机登记未完成，暂时无法确定原因。请将此提示发给管理员，系统会自动重试。",
         "starting": "后台程序仍在启动，暂时未检测到本机服务就绪。请保持电脑开机，稍后查看云端是否上线。",

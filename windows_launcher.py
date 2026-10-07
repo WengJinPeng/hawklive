@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
                     return 0
                 if status.get("state") in {
                     "network_failed", "tls_failed", "registration_rejected",
-                    "cloud_unavailable", "registration_failed", "storage_full",
+                    "cloud_unavailable", "cloud_blocked", "registration_failed", "storage_full",
                     "permission_failed", "port_in_use",
                 }:
                     break

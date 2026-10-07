@@ -67,3 +67,8 @@ class StartupTests(unittest.TestCase):
                 self.assertIn('保护阈值', startup_message(Path(folder), 0))
             with patch('collector_startup.shutil.disk_usage', return_value=SimpleNamespace(free=7.6*1024**3, total=100*1024**3)):
                 self.assertIn('不能证明启动失败原因', startup_message(Path(folder), 0))
+
+    def test_cloud_access_block_is_not_invalid_credentials(self):
+        import io
+        error = urllib.error.HTTPError('https://example.test', 403, 'Forbidden', {}, io.BytesIO(b'error code: 1010'))
+        self.assertEqual(registration_failure(error), 'cloud_blocked')

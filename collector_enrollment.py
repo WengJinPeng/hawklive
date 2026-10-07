@@ -147,7 +147,8 @@ def request_enrollment(
         f"{bundle.cloud_url}/api/v1/edge/enroll",
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers={"Content-Type": "application/json", "Accept": "application/json",
+                 "User-Agent": "HawkHive-Collector"},
     )
     with opener(request, timeout=20) as response:  # type: ignore[attr-defined]
         payload = json.loads(response.read().decode("utf-8"))

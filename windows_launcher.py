@@ -14,9 +14,9 @@ from collector_activation import activate_if_available, activation_candidates
 from collector_enrollment import (
     enroll_if_available,
     enrollment_candidates,
-    enrollment_status,
 )
 from collector_settings import CollectorSettingsError, load_settings
+from collector_startup import record_startup, registration_failure, startup_message, fresh_startup
 from single_instance import AlreadyRunningError
 from windows_install import (
     install_paths,
@@ -101,53 +101,33 @@ def main(argv: list[str] | None = None) -> int:
     )
     if os.name == "nt" and args.install_elevated:
         try:
+            install_started = time.time()
             installed = install_elevated(
                 Path(sys.executable).resolve(), activation_path, enrollment_path
             )
             print(f"Installed automatic collector: {installed}")
             import ctypes
             _install_dir, installed_data_dir = install_paths()
-            status = None
-            deadline = time.monotonic() + 30
-            try:
-                already_configured = load_settings(
-                    installed_data_dir / "collector_settings.json"
-                ).configured
-            except CollectorSettingsError:
-                already_configured = False
-            while (
-                enrollment_path is not None
-                and not already_configured
-                and time.monotonic() < deadline
-            ):
-                status = enrollment_status(installed_data_dir / "collector_settings.json")
-                if status:
+            # Match the supervisor's cold-start allowance (including extraction).
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                status = fresh_startup(installed_data_dir, install_started)
+                if status.get("state") == "pending":
+                    message = "自动采集器安装成功。\n\n本机已提交到云端，正在等待管理员批准。请联系管理员在云端批准本机，无需重新安装。"
+                    ctypes.windll.user32.MessageBoxW(None, message, "HawkHive 等待确认", 0x40)
+                    return 0
+                if open_console_when_available(timeout=1, open_browser=False):
+                    message = "自动采集器安装并启动成功。现在可以回到云端等待设备出现。"
+                    ctypes.windll.user32.MessageBoxW(None, message, "HawkHive 安装成功", 0x40)
+                    return 0
+                if status.get("state") in {
+                    "network_failed", "tls_failed", "registration_rejected",
+                    "cloud_unavailable", "registration_failed", "storage_full",
+                    "permission_failed", "port_in_use",
+                }:
                     break
-                try:
-                    if load_settings(
-                        installed_data_dir / "collector_settings.json"
-                    ).configured:
-                        break
-                except CollectorSettingsError:
-                    pass
                 time.sleep(0.5)
-            if status and status.get("status") == "pending":
-                message = (
-                    "自动采集器安装成功。\n\n"
-                    "本机已自动提交到云端，正在等待管理员决定是否加入。\n\n"
-                    "管理员批准并填写采集器名称后，本机会自动开始工作。"
-                )
-                ctypes.windll.user32.MessageBoxW(None, message, "HawkHive 等待确认", 0x40)
-                return 0
-            if open_console_when_available(timeout=30, open_browser=False):
-                message = "自动采集器安装并启动成功。现在可以回到云端等待设备出现。"
-                ctypes.windll.user32.MessageBoxW(None, message, "HawkHive 安装成功", 0x40)
-                return 0
-            message = (
-                "自动采集器已经安装，但首次启动尚未成功。系统会每分钟自动重试。\n\n"
-                "请确认这台电脑可以访问云端；若持续未上线，请联系管理员查看任务计划程序中的 "
-                "HawkHiveDPC8001Collector。"
-            )
+            message = startup_message(installed_data_dir, install_started)
             ctypes.windll.user32.MessageBoxW(None, message, "HawkHive 等待连接", 0x30)
             return 5
         except Exception as exc:
@@ -183,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
                         return
                 time.sleep(0.5)
         threading.Thread(target=watch_supervisor, daemon=True).start()
+    record_startup(data_dir, "starting")
     enrolled = None
     while True:
         try:
@@ -193,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
                 data_dir / "collector_settings.json", args.enrollment
             )
             if enrolled is not None and enrolled.status == "pending":
+                record_startup(data_dir, "pending")
                 print("CLOUD_APPROVAL_REQUIRED: collector registration submitted")
                 if os.name == "nt" and args.no_browser:
                     time.sleep(10)
@@ -200,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             break
         except Exception as exc:
+            record_startup(data_dir, registration_failure(exc))
             message = (
                 "自动登记失败。请确认电脑可以访问云端；系统会自动重试。\n\n"
                 f"详细信息：{exc}"
@@ -222,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Monitor defaults are resolved while importing dashboard_server, so the
     # environment must be configured before this import.
+    record_startup(data_dir, "starting")
     import dashboard_server
 
     print("HawkHive DPC8001-G Collector")
@@ -248,4 +232,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        if "--managed-worker" in sys.argv and os.environ.get("DCP_DATA_DIR"):
+            import errno
+            state = "worker_exited"
+            if isinstance(exc, OSError):
+                state = {errno.ENOSPC: "storage_full", errno.EACCES: "permission_failed",
+                         errno.EADDRINUSE: "port_in_use"}.get(exc.errno, state)
+            record_startup(Path(os.environ["DCP_DATA_DIR"]), state)
+        raise

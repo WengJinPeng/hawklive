@@ -11,6 +11,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+from collector_startup import record_startup
 from collector_settings import load_settings
 from single_instance import SingleInstanceLock
 from update_protocol import (MAX_EXE_BYTES, atomic_json, read_json, secure_origin,
@@ -181,7 +182,11 @@ class Supervisor:
                    '--port',str(self.port),'--data-dir',str(self.data_dir),
                    '--activation',str(self.data_dir / ACTIVATION_FILENAME),
                    '--enrollment',str(self.data_dir / ENROLLMENT_FILENAME)]
-        self.child = subprocess.Popen(command,env=env,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        try:
+            self.child = subprocess.Popen(command,env=env,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        except OSError:
+            record_startup(self.data_dir, 'worker_exited')
+            raise
 
     def health(self) -> dict:
         try:
@@ -289,11 +294,14 @@ class Supervisor:
         next_check = time.monotonic() + 60
         while True:
             if self.child.poll() is not None:
+                record_startup(self.data_dir, 'worker_exited')
                 self.report('restarting',error='Collector process exited; restarting')
                 time.sleep(10)
                 self.start_worker()
             health = self.health()
             if health:
+                if self.status.get('state') in ('starting', 'restarting'):
+                    record_startup(self.data_dir, 'ready')
                 self.current = health['version']
                 if self.status.get('state') in ('starting','restarting'):
                     self.report('idle',error=None)

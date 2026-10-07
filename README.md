@@ -715,3 +715,10 @@ Windows collector 0.6.2 remains compatible; this is a cloud-only change.
 Acceptance: `python -m unittest test_collector_retirement_postgres` with
 `DCP_DEVICE_DELETE_TEST_DATABASE_URL` pointing to a disposable `devicedeleteqa`
 database. Never run these fixtures against production.
+
+
+### Windows startup diagnostics and package retention (0.6.5)
+
+Installation waits up to 120 seconds for a supervised, healthy collector. Fresh startup evidence distinguishes pending approval, network/TLS failures, rejected registration, disk-full, permissions and port conflicts. Unknown failures remain unconfirmed; diagnostics store only fixed codes and timestamps, never credentials or raw exceptions. A disk below 1 GiB triggers an operator instruction without deleting measurement data.
+
+Run `python scripts/cleanup_collector_packages.py release/updates --dry-run` to preview obsolete packages. Without `--dry-run`, only digest-named EXEs are removed; current plus two previous packages and every package younger than seven days remain. Missing/invalid channel metadata fails closed. Production runs this after successful publication and daily; GitHub build artifacts expire after 14 days. Windows updater uses fixed staging/current/rollback filenames, retaining one rollback binary rather than accumulating versioned packages.

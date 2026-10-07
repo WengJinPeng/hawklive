@@ -87,6 +87,19 @@ class WindowsInstallTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), b"MZ-new")
             self.assertFalse(destination.with_suffix(".exe.new").exists())
 
+class HealthProbeTests(unittest.TestCase):
+    def test_rejects_unrelated_service_and_accepts_supervised_collector(self):
+        import io
+        import json
+        from unittest.mock import Mock, patch
+        for payload, expected in [({'ok': True}, False),
+                                  ({'ok': True, 'data': {'monitor_running': True, 'version': '0.6.5'}}, False),
+                                  ({'ok': True, 'data': {'monitor_running': True, 'version': '0.6.5', 'supervisor_nonce': 'a'*48}}, True)]:
+            response = io.BytesIO(json.dumps(payload).encode()); response.status = 200
+            opener = Mock(); opener.open.return_value = response
+            with patch('windows_install.urllib.request.build_opener', return_value=opener), patch('windows_install.time.monotonic', side_effect=[0, 0, 2]):
+                self.assertEqual(windows_install.open_console_when_available(timeout=1, open_browser=False), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

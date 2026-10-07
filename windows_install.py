@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ctypes
+import json
+import re
 import os
 import shutil
 import subprocess
@@ -219,10 +221,15 @@ def open_console_when_available(
     while time.monotonic() < deadline:
         try:
             with opener.open(f"http://127.0.0.1:{port}/api/health", timeout=1) as response:
-                if response.status == 200:
+                payload = json.loads(response.read(16384))
+                data = payload.get("data", {}) if isinstance(payload, dict) else {}
+                if (response.status == 200 and payload.get("ok") is True
+                        and data.get("monitor_running") is True
+                        and isinstance(data.get("version"), str)
+                        and re.fullmatch(r"[0-9a-f]{48}", str(data.get("supervisor_nonce", "")))):
                     if open_browser:
                         webbrowser.open(f"http://127.0.0.1:{port}/collector.html", new=1)
                     return True
-        except (OSError, urllib.error.URLError):
+        except (OSError, urllib.error.URLError, ValueError, AttributeError):
             time.sleep(0.25)
     return False

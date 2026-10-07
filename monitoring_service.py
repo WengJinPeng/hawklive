@@ -20,6 +20,7 @@ from alarm_config import (
 from auth_service import DEFAULT_CUSTOMER_ID
 from dcp8001_collector import Dcp8001TcpClient
 from collector_diagnostics import diagnostic_scope
+from network_recovery import NetworkRecovery
 
 PRIVATE_DEVICE_NETWORKS = tuple(
     ipaddress.ip_network(value)
@@ -91,6 +92,7 @@ class MonitoringService:
         self._device_failures: dict[str, int] = {}
         self._failure_log_state: dict[str, tuple[str, float, int]] = {}
         self._next_poll_at: dict[str, float] = {}
+        self._network_recovery = NetworkRecovery()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -1059,6 +1061,36 @@ class MonitoringService:
         for device_id in device_ids:
             self._close_device_client(device_id)
 
+    def network_recovery_status(self, devices):
+        now = time.monotonic()
+        ids = {str(device['id']) for device in devices if device.get('enabled', True)}
+        with self._lock:
+            failed = ids & set(self._device_failures)
+            next_retry = min((max(0,self._next_poll_at.get(key,now)-now) for key in failed),default=None)
+            state = self._network_recovery.state([device['host'] for device in devices if str(device['id']) in ids],len(failed))
+            if not failed and (self.options.demo or not ids or not all(
+                self.latest.get(key,{}).get('source') == 'device'
+                and self.latest.get(key,{}).get('online') is True
+                and 0 <= time.time() - float(self.latest.get(key,{}).get('connection_checked_at') or 0) <= max(45,self.options.poll_seconds * 2.5) for key in ids
+            )):
+                state = 'unknown'
+            return {
+                'network_state': state,
+                'network_next_retry_seconds': next_retry,
+                'network_changed_at': self._network_recovery.changed_at,
+            }
+
+    def _watch_network(self, configured, busy_ids):
+        now = time.monotonic()
+        if not self._network_recovery.check(now,time.time()):
+            return
+        with self._lock:
+            failed = sorted(({str(device['id']) for _room,device in configured} & set(self._device_failures)) - busy_ids)
+            for index,key in enumerate(failed):
+                self._next_poll_at[key] = min(self._next_poll_at.get(key,now),now + min(index * .25,5))
+        if failed:
+            self._log_diagnostic('INFO','network_changed_reprobe',f'Local adapter changed; scheduling bounded reconnect for {len(failed)} device(s)')
+
     def _run(self) -> None:
         workers = max(1, min(self.options.poll_workers, 32))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="dcp-device") as executor:
@@ -1084,6 +1116,7 @@ class MonitoringService:
                     continue
                 active_ids = {str(device["id"]) for _room, device in configured}
                 busy_ids = set(in_flight.values())
+                self._watch_network(configured,busy_ids)
                 endpoints = {
                     str(device["id"]): (str(device["host"]), int(device["tcpPort"]), int(device["slave"]))
                     for _room, device in configured

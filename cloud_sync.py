@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 from device_discovery import scan_modbus_networks
 from collector_diagnostics import init_queue, enqueue, prune_queue, redact, diagnostic_scope
 
-COLLECTOR_VERSION = "0.6.6"
+COLLECTOR_VERSION = "0.6.7"
 
 
 def canonical_uuid(value: object) -> str:
@@ -383,6 +383,9 @@ class CloudSyncService:
                 "device_total": int(context.get("device_total") or 0),
                 "device_online": int(context.get("device_online") or 0),
                 "device_states": context.get("device_states"),
+                "network_state": context.get("network_state", "unknown"),
+                "network_next_retry_seconds": context.get("network_next_retry_seconds"),
+                "network_changed_at": context.get("network_changed_at"),
                 "update_status": context.get("update_status"),
                 "last_reading_at": context.get("last_reading_at"),
                 "pending_uploads": self.pending_count(),

@@ -269,6 +269,9 @@ class CollectorHeartbeat(BaseModel):
     quarantined_uploads: int = Field(default=0, ge=0)
     unassigned_uploads: int = Field(default=0, ge=0)
     oldest_pending_at: float | None = Field(default=None, gt=0)
+    network_state: Literal["unknown", "healthy", "lan_unavailable", "no_direct_lan", "reconnecting"] = "unknown"
+    network_next_retry_seconds: float | None = Field(default=None, ge=0)
+    network_changed_at: float | None = Field(default=None, gt=0)
     storage_state: str = Field(default="unknown", max_length=40)
     database_bytes: int | None = Field(default=None, ge=0)
     disk_free_bytes: int | None = Field(default=None, ge=0)
@@ -1760,6 +1763,9 @@ def get_admin_sites(
             "quarantined_uploads": int(status.get("quarantined_uploads") or 0),
             "unassigned_uploads": int(status.get("unassigned_uploads") or 0),
             "oldest_pending_at": status.get("oldest_pending_at"),
+            "network_state": status.get("network_state", "unknown"),
+            "network_next_retry_seconds": status.get("network_next_retry_seconds"),
+            "network_changed_at": status.get("network_changed_at"),
             "storage_state": status.get("storage_state", "unknown"),
             "disk_free_bytes": status.get("disk_free_bytes"),
             "clock_offset_seconds": status.get("clock_offset_seconds"),

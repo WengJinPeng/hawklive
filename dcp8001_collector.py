@@ -297,7 +297,12 @@ class Dcp8001TcpClient:
         self._cancelled = False
         self.request_register: int | None = None
         self.request_quantity: int | None = None
-        self.sock = socket.create_connection((host, tcp_port), timeout=timeout)
+        from network_recovery import device_source_address
+        source = device_source_address(host)
+        if source:
+            self.sock = socket.create_connection((host, tcp_port), timeout=timeout, source_address=(source, 0))
+        else:
+            self.sock = socket.create_connection((host, tcp_port), timeout=timeout)
         try:
             self.sock.settimeout(timeout)
             self._configure_keepalive()

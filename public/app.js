@@ -466,6 +466,14 @@ function collectorStorageLabel(state) {
   }[state] || "待上报";
 }
 
+function collectorNetworkLabel(site) {
+  if (!site.connected && !site.is_current) return uiText("采集器失联，等待恢复后自动诊断");
+  const labels = {healthy:"设备网络正常",lan_unavailable:"未检测到活动局域网连接；请检查电脑网线",no_direct_lan:"未检测到直连设备网段；请检查网线或网关连接",reconnecting:"正在自动重连；持续失败请检查交换机和设备供电"};
+  const label = labels[site.network_state] || "等待采集器上报自动诊断";
+  return site.network_state !== "healthy" && Number.isFinite(site.network_next_retry_seconds)
+    ? `${uiText(label)} · ${uiText(`约 ${Math.ceil(site.network_next_retry_seconds)} 秒后重试`)}` : uiText(label);
+}
+
 function collectorDeviceSummary(site) {
   if (!site.is_current && !site.connected) return "状态待确认";
   if (site.monitor_running === false) return "采集服务已停止，状态待确认";
@@ -510,6 +518,7 @@ function renderCollectorNodes() {
         <div><dt>本地存储</dt><dd>${escapeHtml(collectorStorageLabel(site.storage_state))}</dd></div>
         <div><dt>磁盘可用</dt><dd>${formatBytes(site.disk_free_bytes)}</dd></div>
       </dl>
+      <div class="collector-update-summary"><strong>自动恢复</strong><span>${escapeHtml(collectorNetworkLabel(site))}</span></div>
       <div class="collector-update-summary"><strong>自动更新</strong><span>${escapeHtml(uiText(collectorUpdateLabel(site)))}</span>${topologyCapabilities.collector_update?.version ? `<small><span>可用版本</span> <b data-i18n-ignore>v${escapeHtml(topologyCapabilities.collector_update.version)}</b></small>` : ""}${site.update_status?.enabled && !site.connected && !site.is_current ? '<small>采集器失联，显示最后上报的更新状态</small>' : ""}</div>
       <div class="collector-node-foot"><span>${contactAt ? `心跳 ${relativeTime(contactAt)}` : site.is_current ? "本机状态实时读取" : "尚未收到心跳"}</span><span>${escapeHtml(site.id)}</span></div>
       <div class="collector-node-actions">

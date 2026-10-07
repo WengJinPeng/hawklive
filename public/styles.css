@@ -989,3 +989,9 @@ tbody tr:hover { background: #f7fbfb; }
   .collector-node-head .collector-tags { justify-content: flex-start; }
   .collector-node-foot { flex-direction: column; }
 }
+
+.chart-continuity { display:grid; gap:7px; margin-top:10px; color:var(--text-muted,#58717a); font-size:12px; }
+.chart-continuity > div { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
+.chart-continuity i { width:22px; height:3px; background:var(--series-color); flex-shrink:0; }
+.chart-continuity strong { color:var(--text,#173c45); }
+.chart-continuity p { margin:2px 0 0; }

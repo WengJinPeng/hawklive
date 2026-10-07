@@ -73,3 +73,19 @@ test('single canvas point stays left with one real timestamp label',()=>{
 test('missing particle values never create zero readings',()=>{
  const e=wall([row(now-15,null),row(now-10,'')]);assert.equal(e.elements.get('trendEmpty').hidden,false);assert.equal(e.elements.get('peakValue').textContent,'—');
 });
+test('device palette distinguishes adjacent devices and survives selection/scope changes',()=>{
+ const e=environment('app.js');e.run('rooms=[{id:"r",devices:[{id:"a"},{id:"b"}]}]');
+ const colors=e.run('[deviceColor("a"),deviceColor("b")]');assert.equal(colors[0],'#0072b2');assert.equal(colors[1],'#d55e00');
+ e.run('realtimeSelectedDeviceIds=new Set(["b"]); rooms.push({id:"new",devices:[{id:"0"}]})');
+ assert.equal(e.run('deviceColor("a")'),colors[0]);assert.equal(e.run('deviceColor("b")'),colors[1]);assert.notEqual(e.run('deviceColor("0")'),colors[0]);
+});
+test('long interruption is explicit and does not inflate normal sample cadence',()=>{
+ const e=environment('app.js');const result=e.run('chartContinuity([{timestamp:100},{timestamp:110},{timestamp:3710}])');
+ assert.equal(result.breakAfter,90);assert.equal(result.count,1);assert.equal(result.longest,3600);
+ const continuous=e.run('chartContinuity([{timestamp:100},{timestamp:220},{timestamp:340}])');assert.equal(continuous.count,0);
+ const canvas=e.document.getElementById('trendCanvas');canvas.parentElement=e.document.createElement();const summary=e.document.getElementById('summary');summary.parentElement=e.document.createElement();e.context.canvas=canvas;
+ e.run('drawChart(canvas,[{name:"Device <A>",color:"#0072b2",room:{id:"a"},rows:[{timestamp:100,particles:{pm_0_5_um:1}},{timestamp:110,particles:{pm_0_5_um:2}},{timestamp:3710,particles:{pm_0_5_um:3}}]}],"pm_0_5_um",[],document.getElementById("summary"))');
+ assert.match(summary._continuityElement.innerHTML,/1 处数据缺口/);assert.match(summary._continuityElement.innerHTML,/60 分钟/);assert.match(summary._continuityElement.innerHTML,/Device &lt;A&gt;/);
+ assert.ok(e.calls.some(call=>call[0]==='arc'),'isolated sample remains visible');
+ e.run('drawChart(canvas,[],"pm_0_5_um",[],document.getElementById("summary"))');assert.equal(summary._continuityElement.innerHTML,'');
+});

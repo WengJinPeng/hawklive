@@ -346,6 +346,28 @@ class CloudIngestAuthorizationTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.status_code, 403)
 
+    def test_known_assignment_outside_time_is_an_isolatable_item_error(self):
+        db = MagicMock()
+        db.execute.return_value.fetchone.side_effect = [None, (1,)]
+        with self.assertRaises(HTTPException) as raised:
+            authorize_ingest_target(db, {"customer_id": "c", "site_id": "s"}, "r", "d", historical_at=100)
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(db.execute.call_args.args[1], ("c", "d", "s", "r"))
+
+    def test_unknown_historical_assignment_still_rejects_site_access(self):
+        db = MagicMock()
+        db.execute.return_value.fetchone.return_value = None
+        with self.assertRaises(HTTPException) as raised:
+            authorize_ingest_target(db, {"customer_id": "c", "site_id": "s"}, "r", "other", historical_at=100)
+        self.assertEqual(raised.exception.status_code, 403)
+
+    def test_valid_historical_assignment_still_requires_exact_time_and_scope(self):
+        db = MagicMock()
+        db.execute.return_value.fetchone.return_value = ("Room", "Device")
+        self.assertEqual(authorize_ingest_target(db, {"customer_id": "c", "site_id": "s"}, "r", "d", historical_at=100), ("Room", "Device"))
+        self.assertEqual(db.execute.call_args.args[1], ("c", "d", "s", "r", 100, 100))
+        self.assertEqual(db.execute.call_count, 1)
+
 
 class AutomatedOnboardingSecurityTests(unittest.TestCase):
     ACTIVATION_SECRET = "ab" * 32

@@ -82,6 +82,17 @@ def authorize_ingest_target(
             (device_id,identity["customer_id"],identity["site_id"],cleanroom_id,identity["customer_id"]),
         ).fetchone()
     if row is None:
+        # A known assignment with an invalid measurement time is a rejected item,
+        # not a broken collector credential. Existing clients isolate 422 items.
+        if historical_at is not None:
+            known_assignment = db.execute(
+                """SELECT 1 FROM device_assignment_periods
+                   WHERE customer_id=%s AND device_id=%s AND site_id=%s AND cleanroom_id=%s
+                   LIMIT 1""",
+                (identity["customer_id"], device_id, identity["site_id"], cleanroom_id),
+            ).fetchone()
+            if known_assignment is not None:
+                raise HTTPException(status_code=422, detail="Measurement time is outside the device assignment period")
         raise HTTPException(status_code=403, detail="Device is not assigned to this collector site")
     return str(row[0]), str(row[1])
 

@@ -138,19 +138,42 @@ function historyScopeDevices() {
   return items.filter((item, index) => items.findIndex((other) => String(other.device.id) === String(item.device.id)) === index);
 }
 
+// Seed from all devices, not the current selection, so toggles and scopes keep colors.
+const deviceColorSlots = new Map();
+const devicePalette = ["#0072b2", "#d55e00", "#009e73", "#8b4fa3", "#b58a00", "#cf5279", "#41665a", "#665c30"];
 function deviceColor(deviceId) {
-  let hash = 2166136261;
-  for (const character of String(deviceId || "device")) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
+  const ids = [...new Set([...rooms, ...(historyRooms || [])].flatMap(room => (room.devices || []).map(device => String(device.id))))].sort();
+  for (const id of [...ids, String(deviceId)]) {
+    if (!deviceColorSlots.has(id)) deviceColorSlots.set(id, deviceColorSlots.size);
   }
-  hash ^= hash >>> 16;
-  hash = Math.imul(hash, 0x7feb352d);
-  hash ^= hash >>> 15;
-  hash = Math.imul(hash, 0x846ca68b);
-  hash ^= hash >>> 16;
-  const hue = (hash >>> 0) % 360;
-  return `hsl(${hue} 58% 39%)`;
+  const slot = deviceColorSlots.get(String(deviceId));
+  return slot < devicePalette.length ? devicePalette[slot] : `hsl(${(slot * 137.508 % 360).toFixed(2)} 60% 35%)`;
+}
+
+function chartContinuity(points) {
+  const gaps = points.slice(1).map((point, index) => point.timestamp - points[index].timestamp).filter(gap => gap > 0).sort((a,b) => a-b);
+  // Use the lower median; a single long interruption must not redefine normal cadence.
+  const typical = gaps.length ? gaps[Math.floor((gaps.length - 1) / 2)] : Infinity;
+  const breakAfter = Number.isFinite(typical) ? Math.max(90, typical * 3) : Infinity;
+  const missing = gaps.filter(gap => gap > breakAfter);
+  return {breakAfter, count: missing.length, longest: missing.length ? Math.max(...missing) : 0};
+}
+
+function renderChartContinuity(summary, prepared) {
+  if (!summary.parentElement) return;
+  if (!summary._continuityElement) {
+    summary._continuityElement = document.createElement("div");
+    summary._continuityElement.className = "chart-continuity";
+    summary.parentElement.appendChild(summary._continuityElement);
+  }
+  summary._continuityElement.innerHTML = prepared.map(item => {
+    const gaps = chartContinuity(item.points);
+    const status = gaps.count
+      ? uiText(`${gaps.count} 处数据缺口 · 最长 ${Math.ceil(gaps.longest / 60)} 分钟`)
+      : uiText(item.points.length < 2 ? "仅一个采样点" : "采样点之间连续");
+    const latest = formatTime(item.points[item.points.length - 1].timestamp);
+    return `<div><i style="--series-color:${item.color}"></i><strong data-i18n-ignore>${escapeHtml(item.name)}</strong><span>${escapeHtml(status)}</span><span>${escapeHtml(uiText("最后数据"))} <span data-i18n-ignore>${escapeHtml(latest)}</span></span></div>`;
+  }).join("") + (prepared.some(item => chartContinuity(item.points).count) ? `<p>${escapeHtml(uiText("断线表示未收到数据；缺口期间不补值、不连线。"))}</p>` : "");
 }
 
 function seriesName(room, device, scopeValue) {
@@ -1600,6 +1623,7 @@ function drawChart(canvas, series, key, thresholdLines, summaryElement) {
       .filter((point) => point.timestamp && Number.isFinite(point.value))
       .sort((a, b) => a.timestamp - b.timestamp),
   })).filter((item) => item.points.length);
+  renderChartContinuity(summaryElement, prepared);
   const points = prepared.flatMap((item) => item.points);
   const rect = canvas.getBoundingClientRect();
   if (rect.width < 20) return;
@@ -1681,9 +1705,7 @@ function drawChart(canvas, series, key, thresholdLines, summaryElement) {
   const inspectionPoints = [];
   prepared.forEach((item) => {
     const unit = key === "temperature" ? "°C" : key === "humidity" ? "%RH" : displayParticleUnit(item.rows);
-    const gaps = item.points.slice(1).map((point, index) => point.timestamp - item.points[index].timestamp).filter((gap) => gap > 0).sort((a, b) => a - b);
-    const typicalGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : Infinity;
-    const breakAfter = Number.isFinite(typicalGap) ? Math.max(90, typicalGap * 3) : Infinity;
+    const { breakAfter } = chartContinuity(item.points);
     ctx.strokeStyle = item.color;
     ctx.lineWidth = prepared.length > 12 ? 1.45 : 2.15;
     ctx.globalAlpha = prepared.length > 12 ? 0.72 : 0.9;
@@ -1697,6 +1719,14 @@ function drawChart(canvas, series, key, thresholdLines, summaryElement) {
       else ctx.lineTo(xAt(point.timestamp), yAt(point.value));
     });
     ctx.stroke();
+    item.points.forEach((point, index) => {
+      const beforeGap = index === 0 || point.timestamp - item.points[index - 1].timestamp > breakAfter;
+      const afterGap = index === item.points.length - 1 || item.points[index + 1].timestamp - point.timestamp > breakAfter;
+      if (beforeGap && afterGap) {
+        ctx.fillStyle = item.color;
+        ctx.beginPath(); ctx.arc(xAt(point.timestamp), yAt(point.value), 2.5, 0, Math.PI * 2); ctx.fill();
+      }
+    });
     const latest = item.points[item.points.length - 1];
     ctx.globalAlpha = 1;
     ctx.fillStyle = item.color;

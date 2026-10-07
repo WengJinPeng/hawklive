@@ -1,6 +1,7 @@
 """Small, secret-free startup evidence for unattended Windows installations."""
 from __future__ import annotations
 
+import errno
 import math
 import shutil
 import ssl
@@ -22,14 +23,26 @@ def record_startup(data_dir: Path, state: str) -> None:
 
 
 def registration_failure(exc: Exception) -> str:
+    # Registration also writes local identity/settings; local I/O is not a
+    # network failure. Preserve wrapped errno evidence without exposing text.
+    cause = exc
+    for _ in range(10):
+        if isinstance(cause, OSError):
+            if cause.errno == errno.ENOSPC:
+                return "storage_full"
+            if cause.errno in (errno.EACCES, errno.EPERM):
+                return "permission_failed"
+        cause = cause.__cause__
+        if cause is None:
+            break
     if isinstance(exc, urllib.error.HTTPError):
         if exc.code in (401, 403, 410):
             return "registration_rejected"
-        return "cloud_unavailable"
+        return "cloud_unavailable" if exc.code >= 500 or exc.code == 429 else "registration_failed"
     reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
     if isinstance(reason, ssl.SSLError):
         return "tls_failed"
-    if isinstance(reason, (OSError, TimeoutError)):
+    if isinstance(exc, urllib.error.URLError) or isinstance(reason, (TimeoutError, ConnectionError)):
         return "network_failed"
     return "registration_failed"
 

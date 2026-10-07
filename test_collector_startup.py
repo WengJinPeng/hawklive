@@ -51,3 +51,12 @@ class StartupTests(unittest.TestCase):
             message = startup_message(root, 0)
             self.assertNotIn('secret', message)
             self.assertIn('startup_unconfirmed', message)
+
+    def test_local_registration_io_is_not_reported_as_network(self):
+        import errno
+        full = OSError(errno.ENOSPC, 'secret')
+        wrapped = RuntimeError('identity cannot be stored')
+        wrapped.__cause__ = full
+        self.assertEqual(registration_failure(wrapped), 'storage_full')
+        self.assertEqual(registration_failure(PermissionError(errno.EACCES, 'secret')), 'permission_failed')
+        self.assertEqual(registration_failure(OSError('unknown')), 'registration_failed')

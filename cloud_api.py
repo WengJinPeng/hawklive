@@ -3161,9 +3161,16 @@ def ingest_batch(batch: ReadingBatch, identity: dict[str, str] = Depends(edge_id
         for item in batch.readings:
             if item.site_id != identity["site_id"] or item.customer_id != identity["customer_id"]:
                 raise HTTPException(status_code=403, detail="Reading tenant does not match edge token")
-            cleanroom_name, device_name = authorize_ingest_target(
-                db, identity, item.cleanroom_id, item.device_id, historical_at=item.measured_at,
-            )
+            try:
+                cleanroom_name, device_name = authorize_ingest_target(
+                    db, identity, item.cleanroom_id, item.device_id, historical_at=item.measured_at,
+                )
+            except HTTPException as exc:
+                if exc.status_code == 403:
+                    # Credentials and tenant/site identity were checked above.
+                    # Accept none of this batch; collectors split/isolate invalid targets.
+                    raise HTTPException(status_code=422, detail="Reading target is not valid for this collector site") from exc
+                raise
             db.execute(
                 """
                 INSERT INTO readings(

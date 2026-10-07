@@ -368,6 +368,22 @@ class CloudIngestAuthorizationTests(unittest.TestCase):
         self.assertEqual(db.execute.call_args.args[1], ("c", "d", "s", "r", 100, 100))
         self.assertEqual(db.execute.call_count, 1)
 
+    def test_batch_target_error_isolated_but_tenant_identity_stays_forbidden(self):
+        from cloud_api import ReadingBatch, ReadingIn, ingest_batch
+        item = ReadingIn(record_uuid="11111111-1111-4111-8111-111111111111", customer_id="c",site_id="s",cleanroom_id="r",cleanroom_name="Room",device_id="old",device_name="Old",measured_at=100,source="device",particles={},environment={},alarm_status="NORMAL")
+        batch = ReadingBatch(site_id="s",readings=[item])
+        db = MagicMock()
+        with patch("cloud_api.connect") as connection, patch("cloud_api.authorize_ingest_target",side_effect=HTTPException(403,"Rejected")):
+            connection.return_value.__enter__.return_value = db
+            with self.assertRaises(HTTPException) as rejected:
+                ingest_batch(batch, {"customer_id":"c","site_id":"s"})
+            self.assertEqual(rejected.exception.status_code,422)
+            self.assertFalse(any("INSERT INTO readings" in call.args[0] for call in db.execute.call_args_list))
+            for identity in [{"customer_id":"other","site_id":"s"},{"customer_id":"c","site_id":"other"}]:
+                with self.assertRaises(HTTPException) as forbidden:
+                    ingest_batch(batch, identity)
+                self.assertEqual(forbidden.exception.status_code,403)
+
 
 class AutomatedOnboardingSecurityTests(unittest.TestCase):
     ACTIVATION_SECRET = "ab" * 32

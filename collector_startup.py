@@ -76,9 +76,15 @@ def startup_message(data_dir: Path, since: float) -> str:
     state = state if state in messages else "startup_unconfirmed"
     details = messages.get(state, "尚未检测到后台采集程序就绪，具体原因未确认。请保持电脑开机，并将此提示发给管理员；管理员需检查自动启动任务。")
     try:
-        free = shutil.disk_usage(data_dir).free
-        if free < 1024 * 1024 * 1024:
-            details += f"\n\n检测到数据所在磁盘剩余空间仅 {free / (1024 * 1024):.0f} MB，可能影响启动和保存数据。请清理回收站或无关文件，建议留出至少 1 GB；不要删除 HawkHive 采集数据。"
+        usage = shutil.disk_usage(data_dir)
+        free = usage.free
+        ratio = free / usage.total if usage.total else 0.0
+        # Match StorageMaintenance.status(), including percentage thresholds.
+        critical = free < 1024**3 or (ratio < 0.03 and free < 5 * 1024**3)
+        warning = free < 10 * 1024**3 or (ratio < 0.10 and free < 20 * 1024**3)
+        if critical or warning:
+            level = "已达到采集器的磁盘保护阈值，可能使启动健康检查不通过" if critical else "磁盘空间偏低，此警告本身不能证明启动失败原因"
+            details += f"\n\n数据所在磁盘剩余 {free / (1024**3):.2f} GB（{ratio*100:.1f}%）：{level}。请清理回收站或无关文件，建议留出至少 10 GB 且超过磁盘容量的 10%；不要删除 HawkHive 采集数据。"
     except OSError:
         pass
     return "自动采集器已安装。\n\n" + details + "\n\n请拍照发送此提示。诊断代码：" + str(state or "startup_unconfirmed")

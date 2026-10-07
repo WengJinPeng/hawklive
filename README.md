@@ -719,6 +719,6 @@ database. Never run these fixtures against production.
 
 ### Windows startup diagnostics and package retention (0.6.5)
 
-Installation waits up to 120 seconds for a supervised, healthy collector. Fresh startup evidence distinguishes pending approval, network/TLS failures, rejected registration, disk-full, permissions and port conflicts. Unknown failures remain unconfirmed; diagnostics store only fixed codes and timestamps, never credentials or raw exceptions. A disk below 1 GiB triggers an operator instruction without deleting measurement data.
+Installation waits up to 120 seconds for a supervised, healthy collector. Fresh startup evidence distinguishes pending approval, network/TLS failures, rejected registration, disk-full, permissions and port conflicts. Unknown failures remain unconfirmed; diagnostics store only fixed codes and timestamps, never credentials or raw exceptions. Disk diagnostics use the same capacity and percentage thresholds as collector storage health, and never delete measurement data.
 
 Run `python scripts/cleanup_collector_packages.py release/updates --dry-run` to preview obsolete packages. Without `--dry-run`, only digest-named EXEs are removed; current plus two previous packages and every package younger than seven days remain. Missing/invalid channel metadata fails closed. Production runs this after successful publication and daily; GitHub build artifacts expire after 14 days. Windows updater uses fixed staging/current/rollback filenames, retaining one rollback binary rather than accumulating versioned packages.

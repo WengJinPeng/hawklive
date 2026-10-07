@@ -20,9 +20,9 @@ class StartupTests(unittest.TestCase):
 
     def test_disk_warning_does_not_claim_root_cause(self):
         with tempfile.TemporaryDirectory() as folder:
-            with patch('collector_startup.shutil.disk_usage', return_value=SimpleNamespace(free=100*1024*1024)):
+            with patch('collector_startup.shutil.disk_usage', return_value=SimpleNamespace(free=100*1024*1024, total=100*1024**3)):
                 message = startup_message(Path(folder), 0)
-            self.assertIn('100 MB', message)
+            self.assertIn('0.10 GB', message)
             self.assertIn('可能影响', message)
             self.assertIn('不要删除', message)
 
@@ -60,3 +60,10 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(registration_failure(wrapped), 'storage_full')
         self.assertEqual(registration_failure(PermissionError(errno.EACCES, 'secret')), 'permission_failed')
         self.assertEqual(registration_failure(OSError('unknown')), 'registration_failed')
+
+    def test_percentage_critical_and_warning_match_storage_health(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch('collector_startup.shutil.disk_usage', return_value=SimpleNamespace(free=2*1024**3, total=100*1024**3)):
+                self.assertIn('保护阈值', startup_message(Path(folder), 0))
+            with patch('collector_startup.shutil.disk_usage', return_value=SimpleNamespace(free=7.6*1024**3, total=100*1024**3)):
+                self.assertIn('不能证明启动失败原因', startup_message(Path(folder), 0))

@@ -72,6 +72,7 @@ class CollectorActivationTests(unittest.TestCase):
             seen: dict[str, object] = {}
 
             def opener(request, timeout=0):
+                self.assertEqual(request.get_header("User-agent"), "HawkHive-Collector")
                 seen["url"] = request.full_url
                 seen["body"] = json.loads(request.data.decode("utf-8"))
                 seen["timeout"] = timeout

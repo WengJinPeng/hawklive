@@ -64,6 +64,7 @@ class CollectorEnrollmentTests(unittest.TestCase):
             requests: list[dict[str, object]] = []
 
             def opener(request, timeout=0):
+                self.assertEqual(request.get_header("User-agent"), "HawkHive-Collector")
                 requests.append(json.loads(request.data.decode("utf-8")))
                 return FakeResponse({
                     "ok": True,

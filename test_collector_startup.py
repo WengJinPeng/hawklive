@@ -23,7 +23,7 @@ class StartupTests(unittest.TestCase):
             with patch('collector_startup.shutil.disk_usage', return_value=SimpleNamespace(free=100*1024*1024, total=100*1024**3)):
                 message = startup_message(Path(folder), 0)
             self.assertIn('0.10 GB', message)
-            self.assertIn('可能影响', message)
+            self.assertIn('可能使启动健康检查不通过', message)
             self.assertIn('不要删除', message)
 
     def test_error_classification_never_copies_tokens(self):

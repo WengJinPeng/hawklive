@@ -93,6 +93,7 @@ class MonitoringService:
         self._failure_log_state: dict[str, tuple[str, float, int]] = {}
         self._next_poll_at: dict[str, float] = {}
         self._network_recovery = NetworkRecovery()
+        self._network_reprobe_ids = set()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -1067,7 +1068,7 @@ class MonitoringService:
         with self._lock:
             failed = ids & set(self._device_failures)
             next_retry = min((max(0,self._next_poll_at.get(key,now)-now) for key in failed),default=None)
-            state = self._network_recovery.state([device['host'] for device in devices if str(device['id']) in ids],len(failed))
+            state = self._network_recovery.state([device['host'] for device in devices if str(device['id']) in (failed or ids)],len(failed))
             if not failed and (self.options.demo or not ids or not all(
                 self.latest.get(key,{}).get('source') == 'device'
                 and self.latest.get(key,{}).get('online') is True
@@ -1082,14 +1083,26 @@ class MonitoringService:
 
     def _watch_network(self, configured, busy_ids):
         now = time.monotonic()
-        if not self._network_recovery.check(now,time.time()):
-            return
+        try:
+            changed = self._network_recovery.check(now,time.time())
+        except Exception:
+            # Optional adapter diagnosis must never stop ordinary device polling.
+            self._network_recovery.adapters = None
+            if now - getattr(self,'_network_diagnosis_error_at',float('-inf')) >= 300:
+                self._network_diagnosis_error_at = now
+                self._log_diagnostic('WARNING','network_diagnosis_failed','Adapter diagnosis unavailable; normal device retries continue')
+            changed = False
         with self._lock:
-            failed = sorted(({str(device['id']) for _room,device in configured} & set(self._device_failures)) - busy_ids)
-            for index,key in enumerate(failed):
+            failed = {str(device['id']) for _room,device in configured} & set(self._device_failures)
+            pending = getattr(self,'_network_reprobe_ids',set()) & failed
+            if changed:
+                pending.update(failed)
+            ready = sorted(pending - busy_ids)
+            for index,key in enumerate(ready):
                 self._next_poll_at[key] = min(self._next_poll_at.get(key,now),now + min(index * .25,5))
-        if failed:
-            self._log_diagnostic('INFO','network_changed_reprobe',f'Local adapter changed; scheduling bounded reconnect for {len(failed)} device(s)')
+            self._network_reprobe_ids = pending - set(ready)
+        if ready:
+            self._log_diagnostic('INFO','network_changed_reprobe',f'Local adapter changed; scheduling bounded reconnect for {len(ready)} device(s)')
 
     def _run(self) -> None:
         workers = max(1, min(self.options.poll_workers, 32))

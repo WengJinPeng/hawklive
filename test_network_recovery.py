@@ -61,4 +61,44 @@ class NetworkRecoveryTests(unittest.TestCase):
   with patch('network_recovery.active_adapters',return_value=None):
    self.assertFalse(monitor._network_recovery.check(100,200))
    self.assertEqual(monitor._network_recovery.state(['10.12.0.140'],1),'unknown')
+ def test_busy_failed_device_keeps_reprobe_until_idle_and_cancels_on_recovery(self):
+  import threading
+  monitor=MonitoringService.__new__(MonitoringService)
+  monitor._lock=threading.RLock();monitor._network_recovery=MagicMock()
+  monitor._network_recovery.check.side_effect=[True,False,False,True,False]
+  monitor._device_failures={'a':2};monitor._next_poll_at={'a':200};monitor._log_diagnostic=MagicMock()
+  configured=[({},dict(id='a'))]
+  with patch('monitoring_service.time.monotonic',return_value=100):
+   monitor._watch_network(configured,{'a'})
+   self.assertEqual(monitor._next_poll_at['a'],200)
+   monitor._watch_network(configured,set())
+   self.assertEqual(monitor._next_poll_at['a'],100)
+   monitor._next_poll_at['a']=200
+   monitor._watch_network(configured,set())
+   self.assertEqual(monitor._next_poll_at['a'],200)
+   monitor._watch_network(configured,{'a'})
+   monitor._device_failures.clear()
+   monitor._watch_network(configured,set())
+   self.assertFalse(monitor._network_reprobe_ids)
+   self.assertEqual(monitor._next_poll_at['a'],200)
+ def test_diagnosis_failure_cannot_interrupt_normal_poll_schedule_or_flood_logs(self):
+  import threading
+  monitor=MonitoringService.__new__(MonitoringService)
+  monitor._lock=threading.RLock();monitor._network_recovery=MagicMock()
+  monitor._network_recovery.check.side_effect=OSError('inventory unavailable')
+  monitor._device_failures={'a':2};monitor._next_poll_at={'a':200};monitor._log_diagnostic=MagicMock()
+  with patch('monitoring_service.time.monotonic',return_value=100):
+   for _ in range(3):monitor._watch_network([({},dict(id='a'))],set())
+  self.assertEqual(monitor._next_poll_at['a'],200)
+  self.assertIsNone(monitor._network_recovery.adapters)
+  self.assertEqual(monitor._log_diagnostic.call_count,1)
+ def test_partial_failure_diagnosis_uses_failed_subnet(self):
+  import threading
+  from types import SimpleNamespace
+  monitor=MonitoringService.__new__(MonitoringService)
+  monitor._lock=threading.RLock();monitor._network_recovery=NetworkRecovery();monitor._network_recovery.adapters=ETH
+  monitor._device_failures={'b':2};monitor._next_poll_at={'b':200}
+  monitor.options=SimpleNamespace(demo=False,poll_seconds=10);monitor.latest={}
+  devices=[dict(id='a',host='10.12.0.140'),dict(id='b',host='10.13.0.140')]
+  self.assertEqual(monitor.network_recovery_status(devices)['network_state'],'no_direct_lan')
 if __name__=='__main__':unittest.main()

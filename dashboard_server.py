@@ -120,7 +120,7 @@ def collector_runtime_snapshot() -> dict[str, object]:
         "poll_seconds": MONITOR.options.poll_seconds if MONITOR else None,
         "record_seconds": MONITOR.options.record_seconds if MONITOR else None,
         **connection,
-        **(MONITOR.network_recovery_status(devices) if MONITOR else {"network_state": "unknown"}),
+        **(MONITOR.network_recovery_status(devices) if MONITOR and running else {"network_state": "unknown", "network_next_retry_seconds": None}),
         "last_reading_at": max(successful_times, default=0) or None,
         "last_error": errors[0][:500] if errors else None,
         "storage": STORAGE.status() if STORAGE else {

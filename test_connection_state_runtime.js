@@ -61,3 +61,17 @@ test('cloud distinguishes legacy installers and update rollback from collector c
   assert.equal(vm.runInContext('collectorUpdateLabel(siteInput)',context),'更新失败，已回退旧版');
   assert.equal(vm.runInContext('collectorNodeState(siteInput).label',context),'采集器在线');
 });
+
+test('current device failures require attention without changing collector connectivity',()=>{
+  context.siteInput={connected:true,monitor_running:true,device_offline:7};
+  assert.equal(vm.runInContext('collectorNeedsAttention(siteInput)',context),true);
+  assert.equal(vm.runInContext('collectorNodeState(siteInput).label',context),'采集器在线');
+  context.siteInput={connected:false,device_offline:7};
+  assert.equal(vm.runInContext('collectorNeedsAttention(siteInput)',context),false);
+});
+test('stopped service and lost heartbeat never promise automatic device retries',()=>{
+  context.siteInput={connected:true,monitor_running:false,network_state:'reconnecting',network_next_retry_seconds:10};
+  assert.equal(vm.runInContext('collectorNetworkLabel(siteInput)',context),'采集服务已停止，自动重连暂不可用');
+  context.siteInput.connected=false;
+  assert.equal(vm.runInContext('collectorNetworkLabel(siteInput)',context),'采集器失联，等待恢复后自动诊断');
+});

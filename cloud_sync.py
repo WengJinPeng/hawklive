@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 from device_discovery import scan_modbus_networks
 from collector_diagnostics import init_queue, enqueue, prune_queue, redact, diagnostic_scope
 
-COLLECTOR_VERSION = "0.6.7"
+COLLECTOR_VERSION = "0.6.8"
 
 
 def canonical_uuid(value: object) -> str:

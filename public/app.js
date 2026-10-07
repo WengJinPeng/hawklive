@@ -432,7 +432,9 @@ async function loadTopologySites(force = false) {
 }
 
 function collectorNeedsAttention(site) {
-  return site.config_state === "failed"
+  return (site.connected && site.monitor_running === false)
+    || (site.connected && Number(site.device_offline || 0) > 0)
+    || site.config_state === "failed"
     || Number(site.quarantined_uploads || 0) > 0
     || Number(site.unassigned_uploads || 0) > 0
     || ["warning", "attention", "critical"].includes(String(site.storage_state || ""));
@@ -468,6 +470,7 @@ function collectorStorageLabel(state) {
 
 function collectorNetworkLabel(site) {
   if (!site.connected && !site.is_current) return uiText("采集器失联，等待恢复后自动诊断");
+  if (site.monitor_running === false) return uiText("采集服务已停止，自动重连暂不可用");
   const labels = {healthy:"设备网络正常",lan_unavailable:"未检测到活动局域网连接；请检查电脑网线",no_direct_lan:"未检测到直连设备网段；请检查网线或网关连接",reconnecting:"正在自动重连；持续失败请检查交换机和设备供电"};
   const label = labels[site.network_state] || "等待采集器上报自动诊断";
   return site.network_state !== "healthy" && Number.isFinite(site.network_next_retry_seconds)

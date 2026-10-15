@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -79,7 +80,7 @@ class LocalStorageManagerTests(unittest.TestCase):
             root = Path(directory)
             database = root / "data.sqlite3"
             old = time.time() - 100 * 86400
-            with sqlite3.connect(database) as db:
+            with closing(sqlite3.connect(database)) as db, db:
                 db.execute(
                     "CREATE TABLE readings(id INTEGER PRIMARY KEY, timestamp REAL, synced_at REAL)"
                 )
@@ -97,7 +98,7 @@ class LocalStorageManagerTests(unittest.TestCase):
             )
             manager.run_once()
 
-            with sqlite3.connect(database) as db:
+            with closing(sqlite3.connect(database)) as db:
                 rows = db.execute(
                     "SELECT timestamp,synced_at FROM readings ORDER BY id"
                 ).fetchall()
@@ -113,7 +114,7 @@ class LocalStorageManagerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "data.sqlite3"
-            with sqlite3.connect(database):
+            with closing(sqlite3.connect(database)):
                 pass
             backup_dir = root / "backups"
             backup_dir.mkdir()

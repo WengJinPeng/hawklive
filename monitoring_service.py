@@ -18,7 +18,7 @@ from alarm_config import (
     normalise_alarm_thresholds,
 )
 from auth_service import DEFAULT_CUSTOMER_ID
-from dcp8001_collector import Dcp8001TcpClient
+from dcp8001_collector import Dcp8001TcpClient, ModbusExceptionResponse
 from collector_diagnostics import diagnostic_scope
 from network_recovery import NetworkRecovery
 
@@ -91,6 +91,7 @@ class MonitoringService:
         self._device_io_locks: dict[str, threading.RLock] = {}
         self._device_failures: dict[str, int] = {}
         self._failure_log_state: dict[str, tuple[str, float, int]] = {}
+        self._read_retry_log_state: dict[str, tuple[float, int]] = {}
         self._next_poll_at: dict[str, float] = {}
         self._network_recovery = NetworkRecovery()
         self._network_reprobe_ids = set()
@@ -958,9 +959,11 @@ class MonitoringService:
                     client = self._client_for_device(configured_device)
                     reading = client.read_realtime()
                 except Exception as exc:
-                    self._close_device_client(device_id)
+                    if not isinstance(exc, ModbusExceptionResponse):
+                        self._close_device_client(device_id)
                     self._device_read_failed(room, configured_device, client, exc, started)
                     raise
+                self._record_read_retry(configured_device, client)
                 # Keep recovery persistence in the polling path. A successful
                 # manual read lets it run immediately on this same session.
                 with self._lock:
@@ -1178,6 +1181,27 @@ class MonitoringService:
         except Exception:
             pass  # Operational logging cannot change a physical reading result.
 
+    def _record_read_retry(self, device: dict[str, object], client: Dcp8001TcpClient) -> None:
+        try:
+            retries = getattr(client, "last_read_retries", 0)
+            if not isinstance(retries, int) or not retries:
+                return
+            device_id = str(device["id"])
+            now = time.monotonic()
+            logged_at, occurrences = self._read_retry_log_state.get(device_id, (float('-inf'), 0))
+            occurrences += 1
+            if now - logged_at >= 300:
+                self._log_diagnostic("WARNING", "device_read_retried",
+                                     f"{device['name']}: device={device_id} "
+                                     f"endpoint={device['host']}:{device['tcpPort']}/slave={device['slave']} "
+                                     f"exception_code={client.last_read_retry_code} "
+                                     f"register={client.last_read_retry_register} sample_retries={retries} "
+                                     f"occurrences={occurrences} session_retained=True")
+                logged_at, occurrences = now, 0
+            self._read_retry_log_state[device_id] = (logged_at, occurrences)
+        except Exception:
+            pass  # Optional retry diagnostics cannot turn a valid sample into a failure.
+
     def _poll_device(self, room: dict[str, object], device: dict[str, object]) -> None:
         with diagnostic_scope(room.get("customer_id"), device.get("site_id")):
             # Publish both failure and cooldown before a queued connection test
@@ -1226,17 +1250,20 @@ class MonitoringService:
                             self._close_device_client(device_id)
                             return
                         reading = client.read_realtime()
-                    except Exception:
-                        # Evict the failed session before releasing the I/O lock.
-                        # Otherwise a connection test can reuse it, or this worker
-                        # can close a replacement created by another reader.
-                        self._close_device_client(device_id)
+                    except Exception as exc:
+                        # Evict ambiguous/broken streams while holding the I/O
+                        # lock. Complete application rejections retain framing.
+                        if not isinstance(exc, ModbusExceptionResponse):
+                            self._close_device_client(device_id)
                         raise
                 source = "device"
         except Exception as exc:
             if not self._stop.is_set():
                 self._device_read_failed(room, device, client, exc, started)
             return
+
+        if source == "device":
+            self._record_read_retry(device, client)
 
         # Disk/alarm errors must not churn a healthy embedded gateway session.
         # Only publish a new sample after its alarm evaluation succeeds.
@@ -1336,6 +1363,9 @@ class MonitoringService:
                          f"request_sent={getattr(client, 'request_sent', False)} "
                          f"register={getattr(client, 'request_register', None)} "
                          f"quantity={getattr(client, 'request_quantity', None)} "
+                         f"error_type={type(exc).__name__} winerror={getattr(exc, 'winerror', None)} "
+                         f"mbap_header={getattr(client, 'response_header_hex', None)} "
+                         f"session_retained={isinstance(exc, ModbusExceptionResponse)} "
                          f"elapsed_ms={round((now-started)*1000)} failures={failure_count} "
                          f"occurrences={failure_count-logged_count if error == previous_error else 1} "
                          f"retry_seconds={delay:g} device_timeout={self.options.device_timeout:g} "

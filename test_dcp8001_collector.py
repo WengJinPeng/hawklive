@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, call, patch
 
 from dcp8001_collector import (
     Dcp8001TcpClient,
+    ModbusExceptionResponse,
     UnsupportedParticleUnitError,
     append_crc,
     check_crc,
@@ -41,6 +42,25 @@ class FakeSocket:
 
 class Dcp8001ProtocolTests(unittest.TestCase):
     """Examples taken from the DCP-8001-G communication protocol."""
+
+    def test_write_rejection_is_never_automatically_retried(self):
+        client = object.__new__(Dcp8001TcpClient)
+        client._request_pdu = MagicMock(side_effect=ModbusExceptionResponse(0x86, 6))
+        with self.assertRaises(ModbusExceptionResponse):
+            client.write_single_register(50, 1)
+        client._request_pdu.assert_called_once()
+
+    def test_protocol_error_retains_only_the_bounded_header_for_diagnosis(self):
+        client = object.__new__(Dcp8001TcpClient)
+        client.slave = 1
+        client.timeout = 1.0
+        client.connect_settle = 0
+        client.transaction_id = 0
+        client._first_request = False
+        client.sock = FakeSocket(bytes.fromhex("00 01 2b 57 00 07 01"))
+        with self.assertRaisesRegex(ValueError, "protocol id: 11095"):
+            client.read_holding_registers(0, 2)
+        self.assertEqual(client.response_header_hex, "00012b57000701")
 
     @patch("dcp8001_collector.socket.create_connection")
     def test_keepalive_is_enabled_and_optional_tuning_can_be_unsupported(self, connect):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -13,6 +14,53 @@ from storage_maintenance import LocalStorageManager
 
 
 class LocalStorageManagerTests(unittest.TestCase):
+    def test_maintenance_worker_retries_after_an_unexpected_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = LocalStorageManager(Path(directory) / "data.sqlite3", Path(directory) / "backups")
+            manager.interval_seconds = 0.01
+            recovered = threading.Event()
+            attempts = 0
+
+            def maintenance():
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("diagnostic unavailable")
+                recovered.set()
+
+            with patch.object(manager, "run_once", side_effect=maintenance):
+                manager.start()
+                try:
+                    self.assertTrue(recovered.wait(1))
+                    self.assertEqual(manager._last_error, "diagnostic unavailable")
+                finally:
+                    manager.stop()
+
+    def test_initial_maintenance_does_not_hold_collector_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = LocalStorageManager(Path(directory) / "data.sqlite3", Path(directory) / "backups")
+            entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+
+            def slow_maintenance():
+                entered.set()
+                release.wait(3)
+
+            def start():
+                manager.start()
+                returned.set()
+
+            with patch.object(manager, "run_once", side_effect=slow_maintenance):
+                starter = threading.Thread(target=start)
+                starter.start()
+                try:
+                    self.assertTrue(entered.wait(1))
+                    self.assertTrue(returned.wait(0.5), "backup/integrity maintenance blocks HTTP health and can cause a false update rollback")
+                    self.assertTrue(manager._thread.is_alive())
+                finally:
+                    release.set()
+                    starter.join(3)
+                    manager.stop()
+
     @patch("storage_maintenance.shutil.disk_usage")
     def test_large_absolute_free_space_does_not_warn_on_percentage_alone(self, disk_usage) -> None:
         with tempfile.TemporaryDirectory() as directory:

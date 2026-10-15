@@ -7,6 +7,7 @@ import select
 import socket
 import struct
 import sys
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
@@ -69,6 +70,7 @@ PROTOCOL_PROFILE = "dpc8001-g-protocol-2025-06-04"
 # conservative client throttle, not a manufacturer-specified TCP heartbeat.
 TCP_REQUEST_INTERVAL = 0.05
 TCP_REALTIME_REQUEST_COUNT = 14
+TCP_EXCEPTION_RETRY_DELAY = 0.25
 
 
 def tcp_sample_timeout(timeout: float, connect_settle: float = 1.0,
@@ -78,6 +80,15 @@ def tcp_sample_timeout(timeout: float, connect_settle: float = 1.0,
 
 class UnsupportedParticleUnitError(ValueError):
     """Raised when device values cannot safely use the configured ft3 thresholds."""
+
+
+class ModbusExceptionResponse(ValueError):
+    """A complete, matching application rejection leaves TCP framing intact."""
+
+    def __init__(self, function: int, code: int) -> None:
+        self.function = function
+        self.code = code
+        super().__init__(f"Modbus exception response: function=0x{function:02X}, code={code}")
 
 
 @dataclass
@@ -295,6 +306,8 @@ class Dcp8001TcpClient:
         self.request_sent = False
         self._read_deadline: float | None = None
         self._cancelled = False
+        self._cancel_event = threading.Event()
+        self.response_header_hex: str | None = None
         self.request_register: int | None = None
         self.request_quantity: int | None = None
         from network_recovery import device_source_address
@@ -338,6 +351,8 @@ class Dcp8001TcpClient:
     def cancel_pending_read(self) -> None:
         """Wake a blocking recv during collector shutdown; never send a write."""
         self._cancelled = True
+        if hasattr(self, "_cancel_event"):
+            self._cancel_event.set()
         try:
             self.sock.shutdown(socket.SHUT_RDWR)
         except OSError:
@@ -355,6 +370,7 @@ class Dcp8001TcpClient:
 
     def _request_pdu(self, pdu: bytes) -> bytes:
         self.request_sent = False
+        self.response_header_hex = None
         if getattr(self, "_cancelled", False):
             raise ConnectionAbortedError("Modbus TCP session is closed")
         self.diagnostic_stage = "initial_settle"
@@ -393,6 +409,7 @@ class Dcp8001TcpClient:
             while True:
                 self.diagnostic_stage = "response_header"
                 response_header = self._recv_exact(7, deadline)
+                self.response_header_hex = response_header.hex()
                 rx_transaction_id = int.from_bytes(response_header[0:2], "big")
                 protocol_id = int.from_bytes(response_header[2:4], "big")
                 rx_length = int.from_bytes(response_header[4:6], "big")
@@ -412,8 +429,10 @@ class Dcp8001TcpClient:
                 if unit_id != self.slave:
                     raise ValueError(f"Unexpected slave address: got {unit_id}, expected {self.slave}")
                 if body[0] & 0x80:
-                    code = body[1] if len(body) > 1 else None
-                    raise ValueError(f"Modbus exception response: function=0x{body[0]:02X}, code={code}")
+                    if len(body) != 2 or body[0] != (pdu[0] | 0x80):
+                        raise ValueError("Malformed Modbus exception response")
+                    self.diagnostic_stage = "response_exception"
+                    raise ModbusExceptionResponse(body[0], body[1])
                 self.diagnostic_stage = "response_validated"
                 return body
         finally:
@@ -502,8 +521,34 @@ class Dcp8001TcpClient:
         self._read_deadline = time.monotonic() + tcp_sample_timeout(
             self.timeout, self.connect_settle, getattr(self, "request_interval", TCP_REQUEST_INTERVAL),
         )
+        self.last_read_retries = 0
+        self.last_read_retry_code: int | None = None
+        self.last_read_retry_register: int | None = None
         try:
-            return self._read_realtime_sample()
+            try:
+                return self._read_realtime_sample()
+            except ModbusExceptionResponse as exc:
+                # Code 3 means illegal data value, not "busy". Field gateways
+                # intermittently reject these otherwise valid fixed reads.
+                # One compatibility retry (also for code 6/busy) discards the
+                # whole partial sample and rechecks its unit on the same socket.
+                # This is not a firmware guarantee or a transport-error retry.
+                if exc.code not in (3, 6):
+                    raise
+                if time.monotonic() + TCP_EXCEPTION_RETRY_DELAY >= self._read_deadline:
+                    raise TimeoutError("Timed out reading complete Modbus TCP sample") from exc
+                self.last_read_retries = 1
+                self.last_read_retry_code = exc.code
+                self.last_read_retry_register = self.request_register
+                self.diagnostic_stage = "exception_retry_wait"
+                if self._cancel_event.wait(TCP_EXCEPTION_RETRY_DELAY):
+                    raise ConnectionAbortedError("Modbus TCP session is closed") from exc
+                return self._read_realtime_sample()
+        except ModbusExceptionResponse:
+            # A valid exception is not a partial/ambiguous stream. Keep it for
+            # the next scheduled poll; the monitor still reports failed reads
+            # and applies its ordinary cooldown if the bounded retry fails.
+            raise
         except Exception:
             self.close()  # Never reuse a partially consumed response stream.
             raise

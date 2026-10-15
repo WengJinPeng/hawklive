@@ -34,6 +34,10 @@ class ModbusFixture(socketserver.ThreadingTCPServer):
         self.recovery_quiet_seconds = 0.0
         self.last_connection_at = 0.0
         self.connection_times = []
+        self.exception_codes = {}
+        self.requests = []
+        self.exception_function = 0x83
+        self.exception_suffix = b""
 
 
 class ModbusHandler(socketserver.BaseRequestHandler):
@@ -70,6 +74,13 @@ class ModbusHandler(socketserver.BaseRequestHandler):
                 if broken:
                     continue  # Wi-Fi gateway keeps TCP open but never replies.
                 start, quantity = struct.unpack(">HH", frame[8:12])
+                self.server.requests.append((start, quantity))
+                codes = self.server.exception_codes.get(start, [])
+                if codes:
+                    body = bytes((self.server.exception_function, codes.pop(0))) + self.server.exception_suffix
+                    self.request.sendall(frame[:4] + struct.pack(">H", len(body) + 1) + frame[6:7] + body)
+                    last_response_at = time.monotonic()
+                    continue
                 registers = [0] * quantity
                 if start == 133:
                     registers = [1]
@@ -317,6 +328,128 @@ class DeviceRecoveryTests(unittest.TestCase):
             for _ in range(2):
                 self.assertEqual(client.read_realtime().cleanliness_code, 7)
         self.assertEqual(gateway.connections, 1)
+
+    def test_single_exception_retries_a_complete_sample_on_the_same_tcp_session(self):
+        for code in (3, 6):
+            with self.subTest(code=code):
+                gateway = self.start_gateway()
+                gateway.exception_codes[22] = [code]
+                with Dcp8001TcpClient("127.0.0.1", gateway.server_address[1], timeout=0.2, connect_settle=0) as client:
+                    reading = client.read_realtime()
+                    self.assertEqual(reading.cleanliness_code, 7)
+                    self.assertEqual(client.last_read_retries, 1)
+                    self.assertEqual(client.last_read_retry_code, code)
+                    self.assertEqual(gateway.requests.count((133, 1)), 2, "retry must recheck the unit and discard the partial sample")
+                    client.read_realtime()
+                    self.assertEqual(client.last_read_retries, 0)
+                self.assertEqual(gateway.connections, 1)
+                self.assertEqual(set(gateway.functions), {3})
+
+    def test_repeated_valid_exception_keeps_session_but_saves_no_invalid_sample(self):
+        gateway = self.start_gateway()
+        gateway.exception_codes[22] = [3, 3]
+        self.device.update(host="127.0.0.1", tcpPort=gateway.server_address[1])
+        self.service.options.device_timeout = 0.2
+        factory = lambda **kwargs: Dcp8001TcpClient(**kwargs, connect_settle=0)
+        with patch("monitoring_service.Dcp8001TcpClient", side_effect=factory):
+            self.service._poll_device(self.room, self.device)
+            self.assertFalse(self.service.latest[self.device["id"]]["online"])
+            self.assertEqual(self.rows(), [])
+            self.assertEqual(gateway.requests.count((22, 2)), 2, "one complete-sample retry is the limit")
+            self.assertIn(self.device["id"], self.service._device_clients)
+            self.service._poll_device(self.room, self.device)
+            self.assertEqual(gateway.requests.count((22, 2)), 2, "retained sessions must still respect cooldown")
+            self.service._next_poll_at[self.device["id"]] = 0
+            self.service._poll_device(self.room, self.device)
+        self.assertTrue(self.service.latest[self.device["id"]]["online"])
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(gateway.connections, 1)
+        self.assertEqual(set(gateway.functions), {3})
+
+    def test_connection_test_keeps_complete_exception_session_and_shares_cooldown(self):
+        gateway = self.start_gateway()
+        gateway.exception_codes[22] = [3, 3]
+        self.device.update(tcpPort=gateway.server_address[1])
+        self.service.configuration = lambda *_args: [self.room]
+        # Private address validation remains enabled; only the fixture's socket
+        # destination is replaced so this still exercises the configured path.
+        self.service.options.device_timeout = 0.2
+        factory = lambda **kwargs: Dcp8001TcpClient(**{**kwargs, "host": "127.0.0.1"}, connect_settle=0)
+        with patch("monitoring_service.Dcp8001TcpClient", side_effect=factory):
+            with self.assertRaisesRegex(ValueError, "Modbus exception response"):
+                self.service.test_device_connection(self.device)
+            self.assertIn(self.device["id"], self.service._device_clients)
+            with self.assertRaisesRegex(ConnectionError, "cooling down"):
+                self.service.test_device_connection(self.device)
+            self.service._next_poll_at[self.device["id"]] = 0
+            self.service.test_device_connection(self.device)
+            self.service._poll_device(self.room, self.device)
+        self.assertEqual(gateway.connections, 1)
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_stop_interrupts_exception_retry_wait_without_publishing_a_sample(self):
+        gateway = self.start_gateway()
+        gateway.exception_codes[0] = [6]
+        self.device.update(host="127.0.0.1", tcpPort=gateway.server_address[1])
+        self.service.configuration = lambda: [self.room]
+        self.service.options.device_timeout = 2
+        factory = lambda **kwargs: Dcp8001TcpClient(**kwargs, connect_settle=0)
+        with patch("monitoring_service.Dcp8001TcpClient", side_effect=factory), \
+                patch("dcp8001_collector.TCP_EXCEPTION_RETRY_DELAY", 10):
+            self.service.start()
+            try:
+                deadline = time.monotonic() + 2
+                waiting = False
+                while time.monotonic() < deadline:
+                    with self.service._client_lock:
+                        cached = self.service._device_clients.get(self.device["id"])
+                    if cached and cached[1].diagnostic_stage == "exception_retry_wait":
+                        waiting = True
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(waiting)
+                started = time.monotonic()
+                self.service.stop()
+                self.assertLess(time.monotonic() - started, 1.5)
+                self.assertFalse(self.service._thread.is_alive())
+            finally:
+                self.service.stop()
+        self.assertEqual(self.rows(), [])
+        self.assertFalse(any(event == "device_offline" for _level, event, _message in self.logs))
+
+    def test_exception_retry_is_shared_by_the_whole_sample_and_not_every_register(self):
+        gateway = self.start_gateway()
+        gateway.exception_codes = {0: [3], 22: [3]}
+        with Dcp8001TcpClient("127.0.0.1", gateway.server_address[1], timeout=0.2, connect_settle=0) as client:
+            with self.assertRaisesRegex(ValueError, "Modbus exception response"):
+                client.read_realtime()
+            self.assertEqual(client.last_read_retries, 1)
+        self.assertEqual(gateway.requests.count((133, 1)), 2)
+        self.assertEqual(gateway.requests.count((22, 2)), 1)
+
+    def test_malformed_exception_cannot_be_retried_or_retained_as_a_healthy_stream(self):
+        for function, suffix in ((0x86, b""), (0x83, b"extra")):
+            with self.subTest(function=function, suffix=suffix):
+                gateway = self.start_gateway()
+                gateway.exception_codes[0] = [3]
+                gateway.exception_function = function
+                gateway.exception_suffix = suffix
+                with Dcp8001TcpClient("127.0.0.1", gateway.server_address[1], timeout=0.2, connect_settle=0) as client:
+                    with self.assertRaisesRegex(ValueError, "Malformed Modbus exception"):
+                        client.read_realtime()
+                    self.assertTrue(client._cancelled)
+                    self.assertEqual(client.last_read_retries, 0)
+                self.assertEqual(gateway.requests.count((0, 2)), 1)
+
+    def test_deterministic_exception_is_not_immediately_retried(self):
+        gateway = self.start_gateway()
+        gateway.exception_codes[0] = [2]
+        with Dcp8001TcpClient("127.0.0.1", gateway.server_address[1], timeout=0.2, connect_settle=0) as client:
+            with self.assertRaisesRegex(ValueError, "Modbus exception response"):
+                client.read_realtime()
+            self.assertFalse(client._cancelled, "a complete application rejection does not corrupt TCP framing")
+            self.assertEqual(client.last_read_retries, 0)
+        self.assertEqual(gateway.requests.count((0, 2)), 1)
 
     def test_real_tcp_gateway_requiring_quiet_time_recovers_and_reuses_session(self):
         gateway = self.start_gateway()

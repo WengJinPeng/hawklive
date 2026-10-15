@@ -66,7 +66,6 @@ class LocalStorageManager:
         if self._thread and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self.run_once()
         self._thread = threading.Thread(
             target=self._loop, name="local-storage-maintenance", daemon=True
         )
@@ -78,8 +77,20 @@ class LocalStorageManager:
             self._thread.join(timeout=5)
 
     def _loop(self) -> None:
-        while not self._stop_event.wait(self.interval_seconds):
-            self.run_once()
+        # The initial backup/quick_check may take longer than the supervisor's
+        # startup allowance. Run it on its own worker so collection and HTTP
+        # health can start; the existing process lock still protects maintenance.
+        while not self._stop_event.is_set():
+            try:
+                self.run_once()
+            except Exception as exc:
+                # A diagnostic callback or unexpected maintenance error must
+                # not silently kill this independent worker permanently.
+                with self._lock:
+                    self._last_run_at = time.time()
+                    self._last_error = str(exc)
+            if self._stop_event.wait(self.interval_seconds):
+                return
 
     def _backup_path(self, now: float) -> Path:
         day = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d")

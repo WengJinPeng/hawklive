@@ -101,11 +101,11 @@ class LinkEvidenceTests(unittest.TestCase):
 
     def test_windows_query_has_timeout_no_active_probe_and_no_error_output(self):
         with patch('device_link_diagnostics.os.name','nt'), patch('device_link_diagnostics.subprocess.run') as run:
-            run.side_effect=subprocess.TimeoutExpired('powershell',5,output=b'password=secret')
+            run.side_effect=subprocess.TimeoutExpired('powershell',15,output=b'password=secret')
             value=network_snapshot('10.12.0.115')
             self.assertEqual(value,{'state':'unavailable','error_type':'TimeoutExpired'})
             args,kw=run.call_args
-            self.assertEqual(kw['timeout'],5)
+            self.assertEqual(kw['timeout'],15)
             import base64
             script=base64.b64decode(args[0][-1]).decode('utf-16le')
             for text in ('Test-NetConnection','Invoke-','Set-Net','Get-Process','CommandLine'):

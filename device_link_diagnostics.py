@@ -40,7 +40,7 @@ $r | ConvertTo-Json -Depth 4 -Compress
         result = subprocess.run(
             [executable, '-NoProfile', '-NonInteractive', '-EncodedCommand',
              base64.b64encode(script.encode('utf-16le')).decode('ascii')],
-            capture_output=True, timeout=5, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            capture_output=True, timeout=15, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
         if result.returncode:
             return {'state': 'query_failed', 'returncode': result.returncode}

@@ -135,6 +135,29 @@ class DeviceRecoveryTests(unittest.TestCase):
             return [dict(row) for row in db.execute("SELECT * FROM readings ORDER BY timestamp")]
 
     @patch("monitoring_service.Dcp8001TcpClient")
+    def test_blocked_diagnosis_does_not_delay_healthy_device_poll(self, client_type):
+        from device_link_diagnostics import DeviceLinkDiagnostics
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        def snapshot(host):
+            entered.set()
+            release.wait(2)
+            return {'state': 'observed'}
+        self.service._link_diagnostics.close()
+        self.service._link_diagnostics = DeviceLinkDiagnostics(
+            self.service._log_diagnostic, hosts=['10.12.0.115'], snapshot=snapshot)
+        failed = dict(self.device, id='failed-device', host='10.12.0.115')
+        self.service._device_read_failed(self.room, failed, None, TimeoutError(), time.monotonic())
+        self.assertTrue(entered.wait(1))
+        client_type.return_value.read_realtime.return_value = self.sample(time.time())
+        started = time.monotonic()
+        self.service._poll_device(self.room, self.device)
+        self.assertLess(time.monotonic()-started, .5)
+        self.assertTrue(self.service.latest[self.device['id']]['online'])
+        self.assertEqual(len(self.rows()), 1)
+        release.set()
+
+    @patch("monitoring_service.Dcp8001TcpClient")
     def test_one_retry_then_low_frequency_probes_and_no_cooldown_bypass(self, client_type):
         client_type.return_value.read_realtime.side_effect = TimeoutError("Wi-Fi lost")
         with patch("monitoring_service.time.monotonic", return_value=1000.0) as clock:

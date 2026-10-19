@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterable
+from collections import deque
 from dataclasses import asdict, dataclass
 
 try:
@@ -307,6 +308,9 @@ class Dcp8001TcpClient:
         self._read_deadline: float | None = None
         self._cancelled = False
         self._cancel_event = threading.Event()
+        self._diagnostic_frames = deque(maxlen=3)
+        self._receive_expected = 0
+        self._receive_received = 0
         self.response_header_hex: str | None = None
         self.request_register: int | None = None
         self.request_quantity: int | None = None
@@ -385,6 +389,11 @@ class Dcp8001TcpClient:
         if pause:
             time.sleep(pause)
         transaction_id = self._next_transaction_id()
+        # Metadata only; never retain response bodies or arbitrary AT text.
+        if not hasattr(self, '_diagnostic_frames'):
+            self._diagnostic_frames = deque(maxlen=3)
+        self._diagnostic_frames.append({'tx': transaction_id,
+                                       'register': getattr(self, 'request_register', None)})
         length = len(pdu) + 1
         header = (
             transaction_id.to_bytes(2, "big")
@@ -410,6 +419,10 @@ class Dcp8001TcpClient:
                 self.diagnostic_stage = "response_header"
                 response_header = self._recv_exact(7, deadline)
                 self.response_header_hex = response_header.hex()
+                frame = self._diagnostic_frames[-1]
+                frame['rx'] = int.from_bytes(response_header[:2], 'big')
+                frame['header'] = self.response_header_hex
+                frame['headers_seen'] = frame.get('headers_seen', 0) + 1
                 rx_transaction_id = int.from_bytes(response_header[0:2], "big")
                 protocol_id = int.from_bytes(response_header[2:4], "big")
                 rx_length = int.from_bytes(response_header[4:6], "big")
@@ -456,6 +469,8 @@ class Dcp8001TcpClient:
 
     def _recv_exact(self, length: int, deadline: float | None = None) -> bytes:
         chunks = bytearray()
+        self._receive_expected = length
+        self._receive_received = 0
         while len(chunks) < length:
             if deadline is not None:
                 remaining = deadline - time.monotonic()
@@ -466,7 +481,17 @@ class Dcp8001TcpClient:
             if not chunk:
                 raise ConnectionError("Socket closed while reading response")
             chunks.extend(chunk)
+            self._receive_received = len(chunks)
         return bytes(chunks)
+
+    def diagnostic_snapshot(self) -> dict:
+        return {
+            'stage': self.diagnostic_stage,
+            'request_sent': self.request_sent,
+            'expected_bytes': getattr(self, '_receive_expected', 0),
+            'received_bytes': getattr(self, '_receive_received', 0),
+            'frames': [dict(frame) for frame in getattr(self, '_diagnostic_frames', ())],
+        }
 
     def read_holding_registers(self, start: int, quantity: int) -> list[int]:
         self.request_register = start

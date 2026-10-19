@@ -21,6 +21,7 @@ from auth_service import DEFAULT_CUSTOMER_ID
 from dcp8001_collector import Dcp8001TcpClient, ModbusExceptionResponse
 from collector_diagnostics import diagnostic_scope
 from network_recovery import NetworkRecovery
+from device_link_diagnostics import DeviceLinkDiagnostics
 
 PRIVATE_DEVICE_NETWORKS = tuple(
     ipaddress.ip_network(value)
@@ -95,6 +96,7 @@ class MonitoringService:
         self._next_poll_at: dict[str, float] = {}
         self._network_recovery = NetworkRecovery()
         self._network_reprobe_ids = set()
+        self._link_diagnostics = DeviceLinkDiagnostics(self._log_diagnostic)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -996,6 +998,8 @@ class MonitoringService:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        if self._link_diagnostics.closed.is_set():
+            self._link_diagnostics = DeviceLinkDiagnostics(self._log_diagnostic)
         self._thread = threading.Thread(target=self._run, name="dcp-monitor", daemon=True)
         self._thread.start()
         mode = "demo" if self.options.demo else "device"
@@ -1003,6 +1007,7 @@ class MonitoringService:
 
     def stop(self) -> None:
         self._stop.set()
+        self._link_diagnostics.close()
         with self._client_lock:
             clients = [client for _endpoint, client in self._device_clients.values()]
         for client in clients:
@@ -1343,6 +1348,14 @@ class MonitoringService:
                 "failure_count": failure_count,
                 "retry_at": time.time() + delay,
             }
+        try:
+            evidence = client.diagnostic_snapshot() if client is not None else {'stage': 'connect'}
+            evidence.update(failure_at=time.time(), error_type=type(exc).__name__,
+                            errno=getattr(exc, 'errno', None), winerror=getattr(exc, 'winerror', None),
+                            failure_count=failure_count, retry_seconds=delay)
+            self._link_diagnostics.submit(room.get('customer_id'), device.get('site_id'), device, evidence)
+        except Exception:
+            pass  # Optional evidence must not affect the normal failure path.
         # Save the last actually received sample at its original timestamp.
         # Repeated failures must neither duplicate it nor invent outage values.
         if previous.get("online") and previous.get("source") == "device":

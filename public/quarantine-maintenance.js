@@ -31,6 +31,7 @@
   }
 
   function render() {
+    const opened = new Set([...el('quarantineResults').querySelectorAll('details[open]')].map((node) => node.dataset.quarantineRaw));
     el('quarantineResults').innerHTML = items.map((item) => {
       const result = item.validation;
       const label = result ? (result.valid ? '校验通过，可申请补传' : '校验未通过，保留隔离') : '尚未校验';
@@ -40,7 +41,7 @@
         <p data-i18n-ignore>${escapeHtml(item.device_id)} · ${escapeHtml(item.cleanroom_id)}</p>
         <p><span>上传失败次数</span> <b>${Number(item.metadata.attempts || 0)}</b> · <span>隔离时间</span> <span data-i18n-ignore>${escapeHtml(stamp(item.metadata.quarantined_at))}</span></p>
         <pre data-i18n-ignore>${escapeHtml(item.metadata.error || item.metadata.unavailable_reason || '')}</pre>
-        <details><summary>原始记录（只读）</summary><pre data-i18n-ignore>${escapeHtml(item.raw_text || item.metadata.unavailable_reason || '')}</pre><small data-i18n-ignore>SHA-256: ${escapeHtml(item.raw_sha256 || '—')}</small></details>
+        <details data-quarantine-raw="${escapeHtml(item.id)}" ${opened.has(item.id) ? 'open' : ''}><summary>原始记录（只读）</summary><pre data-i18n-ignore>${escapeHtml(item.raw_text || item.metadata.unavailable_reason || '')}</pre><small data-i18n-ignore>SHA-256: ${escapeHtml(item.raw_sha256 || '—')}</small></details>
         <p class="quarantine-validation ${result?.valid ? 'valid' : ''}">${escapeHtml(text(label))}</p>${issues ? `<ul>${issues}</ul>` : ''}
         <div class="quarantine-row-actions"><button type="button" data-quarantine-validate="${escapeHtml(item.id)}" ${busy || loading || !supported || !item.raw_text ? 'disabled' : ''}>校验原始记录</button>
         <button type="button" data-quarantine-retry="${escapeHtml(item.id)}" ${busy || loading || !supported || !canRetry || !valid(item) ? 'disabled' : ''}>申请指定 UUID 补传</button></div>

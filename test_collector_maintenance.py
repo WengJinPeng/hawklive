@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -32,7 +33,7 @@ def reading(record_uuid=None, **values):
 
 
 def create_local(path, rows):
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute('PRAGMA journal_mode=WAL')
         types={'timestamp':'REAL','cleanliness_code':'INTEGER','particle_unit_code':'INTEGER'}
         fields = ','.join('"'+field+'" '+types.get(field,'TEXT') for field in protocol.SOURCE_FIELDS)
@@ -209,7 +210,7 @@ class CollectorMaintenanceTests(unittest.TestCase):
 
     def test_busy_sqlite_is_bounded_and_does_not_change_normal_writer(self):
         task=self.task()
-        with sqlite3.connect(self.path,timeout=.2) as other:
+        with closing(sqlite3.connect(self.path,timeout=.2)) as other, other:
             other.execute('BEGIN IMMEDIATE');other.execute("UPDATE thresholds SET value=4321")
             started=time.monotonic()
             with self.assertRaises(sqlite3.OperationalError):self.client.prepare(task)

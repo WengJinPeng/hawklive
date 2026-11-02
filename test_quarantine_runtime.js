@@ -16,7 +16,7 @@ function harness() {
   const elements=new Map(),handlers=new Map(),timers=new Map();let next=0;
   const el=(id)=>{
     if(!elements.has(id))elements.set(id,{id,value:'',textContent:'',innerHTML:'',hidden:false,disabled:false,open:false,
-      listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},focus(){},
+      listeners:{},addEventListener(name,fn){this.listeners[name]=fn;},focus(){},querySelectorAll(){return [];},
       showModal(){this.open=true;},close(){this.open=false;this.listeners.close?.();}});
     return elements.get(id);
   };
@@ -47,8 +47,10 @@ test('old collectors show upgrade guidance and original text is escaped',async()
 
 test('validation failure cannot enable replay and exact UUID confirmation is mandatory',async()=>{
   const h=harness();await h.open();
+  h.el('quarantineResults').querySelectorAll=()=>[{dataset:{quarantineRaw:'entry-1'}}];
   h.respond=async()=>({valid:false,issues:[{field:'particle_unit_code',message:'Unsupported unit'}]});
   h.click('quarantine-validate','entry-1');await tick();
+  assert.match(h.el('quarantineResults').innerHTML,/details data-quarantine-raw="entry-1" open/);
   assert.match(h.el('quarantineResults').innerHTML,/Unsupported unit/);
   h.click('quarantine-retry','entry-1');assert.equal(h.el('quarantineConfirmation').hidden,true);
   h.respond=async()=>({items:[fixture(true)],jobs:[],supported:true,can_retry:true,report:null});

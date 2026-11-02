@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import closing
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -139,7 +140,7 @@ class NativeMaintenanceTests(unittest.TestCase):
         self.database=self.root/'data/dashboard_data.sqlite3'
         self.original=reading(customer_id='maintenance-fixture',site_id='maintenance-site',cleanroom_id='maintenance-room',device_id='maintenance-device')
         self.insert_reading(self.original,quarantined=True)
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute("INSERT INTO alarm_events(id,customer_id,site_id,cleanroom_id,device_id,source,metric,started_at,ended_at,limit_description,synced_at) VALUES('protected-fixture-alarm','maintenance-fixture','maintenance-site','maintenance-room','maintenance-device','device','protected',1000,1001,'retained',1001)")
         self.original_row=self.local_row(self.original['record_uuid'])
         self.loopback=LoopbackMaintenance(self.private,readonly);self.addCleanup(self.loopback.close)
@@ -153,16 +154,16 @@ class NativeMaintenanceTests(unittest.TestCase):
     def insert_reading(self,row,quarantined):
         fields=list(protocol.SOURCE_FIELDS)+['host','slave','alarm_raw','alarms_json','sync_attempts','sync_error','sync_quarantined_at']
         values=[row[field] for field in protocol.SOURCE_FIELDS]+['127.0.0.1',1,0,'[]',5 if quarantined else 0,'HTTP Error 422' if quarantined else None,time.time() if quarantined else None]
-        with sqlite3.connect(self.database,timeout=2) as db:db.execute('INSERT INTO readings('+','.join(fields)+') VALUES('+','.join('?' for _ in fields)+')',values)
+        with closing(sqlite3.connect(self.database,timeout=2)) as db, db:db.execute('INSERT INTO readings('+','.join(fields)+') VALUES('+','.join('?' for _ in fields)+')',values)
 
     def local_row(self,record_uuid):
-        with sqlite3.connect(self.database,timeout=2) as db:
+        with closing(sqlite3.connect(self.database,timeout=2)) as db, db:
             db.row_factory=sqlite3.Row
             return dict(db.execute('SELECT * FROM readings WHERE record_uuid=?',(record_uuid,)).fetchone())
 
     def assert_preserved(self):
         self.assertEqual(hashlib.sha256(self.settings.read_bytes()).hexdigest(),self.settings_digest)
-        with sqlite3.connect(self.database) as db:self.assertEqual(db.execute("SELECT synced_at,ended_at FROM alarm_events WHERE id='protected-fixture-alarm'").fetchone(),(1001,1001))
+        with closing(sqlite3.connect(self.database)) as db, db:self.assertEqual(db.execute("SELECT synced_at,ended_at FROM alarm_events WHERE id='protected-fixture-alarm'").fetchone(),(1001,1001))
         self.assertTrue(self.supervisor.health()['monitor_running'])
 
     def test_shipping_exe_reports_details_while_history_and_alarm_uploads_continue(self):
@@ -172,7 +173,7 @@ class NativeMaintenanceTests(unittest.TestCase):
         # Hold the maintenance HTTP request while adding independent normal work.
         normal=reading(customer_id='maintenance-fixture',site_id='maintenance-site',cleanroom_id='maintenance-room',device_id='maintenance-device',timestamp=2000)
         self.insert_reading(normal,quarantined=False)
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             db.execute("INSERT INTO alarm_events(id,customer_id,site_id,cleanroom_id,device_id,source,metric,started_at,ended_at,limit_description) VALUES(?,?,?,?,?,'device','fixture',2000,2001,'synthetic')",(str(uuid4()),'maintenance-fixture','maintenance-site','maintenance-room','maintenance-device'))
         self.assertTrue(self.loopback.normal_reading.wait(13),'Normal historical uploads must progress during blocked maintenance')
         self.assertTrue(self.loopback.normal_alarm.wait(2),'Normal alarm uploads must progress independently')
@@ -188,7 +189,7 @@ class NativeMaintenanceTests(unittest.TestCase):
         after=self.local_row(self.original['record_uuid'])
         self.assertIsNone(after['sync_quarantined_at']);self.assertIsNotNone(after['synced_at'])
         for key in self.original_row.keys()-{'synced_at','sync_error','sync_quarantined_at'}:self.assertEqual(after[key],self.original_row[key])
-        with sqlite3.connect(self.database) as db:
+        with closing(sqlite3.connect(self.database)) as db, db:
             backup=db.execute('SELECT original_row_json,state FROM maintenance_reading_backups').fetchone()
             self.assertEqual(json.loads(backup[0]),self.original_row);self.assertEqual(backup[1],'completed')
         self.assert_preserved()

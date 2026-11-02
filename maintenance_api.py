@@ -138,7 +138,7 @@ def validate_original(api, db, raw_text, identity):
                 raise HTTPException(409, 'Record UUID already contains different data; original was preserved')
         return {'valid':True,'issues':[],'already_in_cloud':row is not None}, item
     except ValidationError as error:
-        issues = [{'field':'.'.join(map(str,item['loc'])),'message':item['msg'][:300]} for item in error.errors(include_input=False,include_url=False)[:20]]
+        issues = [{'field':'.'.join(map(str,item['loc'])) or 'original_record','message':item['msg'][:300]} for item in error.errors(include_input=False,include_url=False)[:20]]
     except HTTPException as error:
         issues = [{'field':'ownership_or_history','message':str(error.detail)[:300]}]
     except (ValueError, TypeError, KeyError):

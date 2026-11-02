@@ -79,6 +79,34 @@ services:
       retries: 5
       start_period: 10s
 
+  export-api:
+    image: hawkhive-cloud:local
+    pull_policy: never
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["uvicorn", "export_api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*", "--timeout-graceful-shutdown", "90"]
+    stop_grace_period: 100s
+    cpus: 0.75
+    mem_limit: 768m
+    memswap_limit: 768m
+    pids_limit: 64
+    read_only: true
+    environment:
+      DATABASE_URL: postgresql://dcp8001:${POSTGRES_PASSWORD}@postgres:5432/dcp8001
+      PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=30000"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - export_tmp:/tmp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   email-worker:
     image: hawkhive-cloud:local
     stop_grace_period: 90s
@@ -129,3 +157,4 @@ volumes:
   caddy_config:
   caddy_data:
   postgres_data:
+  export_tmp:

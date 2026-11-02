@@ -25,5 +25,7 @@
 		-Server
 	}
 
+	@excel_export path /api/history/export-xlsx
+	reverse_proxy @excel_export export-api:8000
 	reverse_proxy ingest-api:8000
 }

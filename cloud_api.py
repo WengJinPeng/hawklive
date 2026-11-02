@@ -3021,7 +3021,9 @@ def customer_excel_export(
     user: dict[str, object] = Depends(customer_user),
 ) -> StreamingResponse:
     from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
 
     customer_id = str(user["customer_id"])
     locale = normalize_report_locale(locale)
@@ -3037,14 +3039,27 @@ def customer_excel_export(
             room for room in config
             if any(str(device["id"]) in requested_device_id_set for device in room.get("devices", []))
         ]
-    workbook = Workbook()
-    workbook.remove(workbook.active)
+    # Flush worksheet rows to temporary XML instead of retaining every cell.
+    # Monthly reports must not exhaust memory shared with ingestion and alarms.
+    workbook = Workbook(write_only=True)
+    bold_font = Font(bold=True)
+
+    def styled_row(sheet, values, *, fill=None, header=False):
+        cells = []
+        for value in values:
+            cell = WriteOnlyCell(sheet, value=value)
+            if header:
+                cell.font = bold_font
+            if fill is not None:
+                cell.fill = fill
+            cells.append(cell)
+        return cells
+
     summary_sheet_name = str(catalog["summary_sheet"])
     summary = workbook.create_sheet(summary_sheet_name)
+    summary.freeze_panes = "A2"
     summary_headers = list(catalog["summary_headers"])
-    summary.append(summary_headers)
-    for cell in summary[1]:
-        cell.font = Font(bold=True)
+    summary.append(styled_row(summary, summary_headers, header=True))
     particle_unit = report_particle_unit(locale)
     metric_specs = [
         ("0.3 µm", particle_unit, "particles", "pm_0_3_um"),
@@ -3058,94 +3073,106 @@ def customer_excel_export(
     ]
     red_fill = PatternFill("solid", fgColor="FDECEB")
     used_titles = {summary_sheet_name}
-    for room in config:
-        base_title = re.sub(r"[\\/*?:\[\]]", "_", str(room["name"])).strip()[:31]
-        base_title = base_title or str(catalog["cleanroom_fallback"])
-        title = base_title
-        suffix = 2
-        while title in used_titles:
-            marker = f" {suffix}"
-            title = f"{base_title[:31-len(marker)]}{marker}"
-            suffix += 1
-        used_titles.add(title)
-        sheet = workbook.create_sheet(title or str(catalog["cleanroom_fallback"]))
-        headers = list(catalog["table_headers"])
-        sheet.append(headers)
-        for cell in sheet[1]:
-            cell.font = Font(bold=True)
-        clauses = ["customer_id=%s", "cleanroom_id=%s"]
-        params: list[object] = [customer_id, room["id"]]
-        if start is not None:
-            clauses.append("measured_at>=to_timestamp(%s)")
-            params.append(start)
-        if end is not None:
-            clauses.append("measured_at<=to_timestamp(%s)")
-            params.append(end)
-        if requested_device_ids:
-            clauses.append(f"device_id IN ({','.join('%s' for _ in requested_device_ids)})")
-            params.extend(requested_device_ids)
-        with connect() as db:
-            record_count = db.execute(
-                f"SELECT COUNT(*) FROM readings WHERE {' AND '.join(clauses)}", tuple(params)
-            ).fetchone()[0]
-            if record_count > 100000:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"{room['name']} has more than 100,000 rows; select a shorter time range",
-                )
-            rows = db.execute(
-                f"""
-                SELECT device_id,device_name,measured_at,particles,environment,
-                    alarm_status,alarm_details FROM readings
-                WHERE {' AND '.join(clauses)} ORDER BY measured_at
-                """,
-                tuple(params),
-            ).fetchall()
-            alarm_rows = db.execute(
-                f"""
-                SELECT device_id,COUNT(*) FROM alarm_events
-                WHERE {' AND '.join(clauses).replace('measured_at', 'started_at')}
-                GROUP BY device_id
-                """,
-                tuple(params),
-            ).fetchall()
-        alarm_counts = dict(alarm_rows)
-        display_names = {device["id"]: device["name"] for device in room["devices"]}
-        maintenance_records = annotate_maintenance([{"device_id":r[0],"timestamp":r[2].timestamp()} for r in rows],customer_id)
-        by_device: dict[str, list[tuple[Any, ...]]] = {}
-        for row, marked in zip(rows, maintenance_records):
-            by_device.setdefault(row[0], []).append(row)
-            details = report_alarm_details(row[6] or [], locale)
-            if marked.get("maintenance"):
-                label = "维护期间" if locale == "zh-CN" else "During maintenance"
-                details = f"{details} · {label}: {marked['maintenance']['reason']}".strip(" ·")
-            particles, environment = row[3] or {}, row[4] or {}
-            sheet.append([
-                row[2].replace(tzinfo=None), row[1],
-                particles.get("pm_0_3_um"), particles.get("pm_0_5_um"),
-                particles.get("pm_1_0_um"), particles.get("pm_2_5_um"),
-                particles.get("pm_5_0_um"), particles.get("pm_10_0_um"),
-                environment.get("temperature"), environment.get("humidity"),
-                report_status(row[5], locale), details,
-            ])
-            if row[5] == "ALARM_ACTIVE":
-                for cell in sheet[sheet.max_row]:
-                    cell.fill = red_fill
-        for device_id, device_rows in by_device.items():
-            for metric, unit, group, key in metric_specs:
-                values = [float(row[3 if group == "particles" else 4][key]) for row in device_rows if key in (row[3 if group == "particles" else 4] or {})]
-                if values:
-                    summary.append([
-                        room["name"], display_names.get(device_id, device_id), metric, unit,
-                        sum(values) / len(values), min(values), max(values), alarm_counts.get(device_id, 0),
-                        len(values), device_rows[0][2].replace(tzinfo=None),
-                        device_rows[-1][2].replace(tzinfo=None),
-                    ])
-        sheet.freeze_panes = "A2"
-        sheet.auto_filter.ref = sheet.dimensions
-    summary.freeze_panes = "A2"
-    output = io.BytesIO()
-    workbook.save(output)
+    try:
+        for room in config:
+            base_title = re.sub(r"[\\/*?:\[\]]", "_", str(room["name"])).strip()[:31]
+            base_title = base_title or str(catalog["cleanroom_fallback"])
+            title = base_title
+            suffix = 2
+            while title in used_titles:
+                marker = f" {suffix}"
+                title = f"{base_title[:31-len(marker)]}{marker}"
+                suffix += 1
+            used_titles.add(title)
+            sheet = workbook.create_sheet(title or str(catalog["cleanroom_fallback"]))
+            sheet.freeze_panes = "A2"
+            headers = list(catalog["table_headers"])
+            sheet.append(styled_row(sheet, headers, header=True))
+            clauses = ["customer_id=%s", "cleanroom_id=%s"]
+            params: list[object] = [customer_id, room["id"]]
+            if start is not None:
+                clauses.append("measured_at>=to_timestamp(%s)")
+                params.append(start)
+            if end is not None:
+                clauses.append("measured_at<=to_timestamp(%s)")
+                params.append(end)
+            if requested_device_ids:
+                clauses.append(f"device_id IN ({','.join('%s' for _ in requested_device_ids)})")
+                params.extend(requested_device_ids)
+            with connect() as db:
+                record_count = db.execute(
+                    f"SELECT COUNT(*) FROM readings WHERE {' AND '.join(clauses)}", tuple(params)
+                ).fetchone()[0]
+                if record_count > 100000:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"{room['name']} has more than 100,000 rows; select a shorter time range",
+                    )
+                rows = db.execute(
+                    f"""
+                    SELECT device_id,device_name,measured_at,particles,environment,
+                        alarm_status,alarm_details FROM readings
+                    WHERE {' AND '.join(clauses)} ORDER BY measured_at
+                    """,
+                    tuple(params),
+                ).fetchall()
+                alarm_rows = db.execute(
+                    f"""
+                    SELECT device_id,COUNT(*) FROM alarm_events
+                    WHERE {' AND '.join(clauses).replace('measured_at', 'started_at')}
+                    GROUP BY device_id
+                    """,
+                    tuple(params),
+                ).fetchall()
+            alarm_counts = dict(alarm_rows)
+            display_names = {device["id"]: device["name"] for device in room["devices"]}
+            maintenance_records = annotate_maintenance([{"device_id":r[0],"timestamp":r[2].timestamp()} for r in rows],customer_id)
+            by_device: dict[str, list[tuple[Any, ...]]] = {}
+            for row, marked in zip(rows, maintenance_records):
+                by_device.setdefault(row[0], []).append(row)
+                details = report_alarm_details(row[6] or [], locale)
+                if marked.get("maintenance"):
+                    label = "维护期间" if locale == "zh-CN" else "During maintenance"
+                    details = f"{details} · {label}: {marked['maintenance']['reason']}".strip(" ·")
+                particles, environment = row[3] or {}, row[4] or {}
+                values = [
+                    row[2].replace(tzinfo=None), row[1],
+                    particles.get("pm_0_3_um"), particles.get("pm_0_5_um"),
+                    particles.get("pm_1_0_um"), particles.get("pm_2_5_um"),
+                    particles.get("pm_5_0_um"), particles.get("pm_10_0_um"),
+                    environment.get("temperature"), environment.get("humidity"),
+                    report_status(row[5], locale), details,
+                ]
+                if row[5] == "ALARM_ACTIVE":
+                    sheet.append(styled_row(sheet, values, fill=red_fill))
+                else:
+                    sheet.append(values)
+            for device_id, device_rows in by_device.items():
+                for metric, unit, group, key in metric_specs:
+                    values = [float(row[3 if group == "particles" else 4][key]) for row in device_rows if key in (row[3 if group == "particles" else 4] or {})]
+                    if values:
+                        summary.append([
+                            room["name"], display_names.get(device_id, device_id), metric, unit,
+                            sum(values) / len(values), min(values), max(values), alarm_counts.get(device_id, 0),
+                            len(values), device_rows[0][2].replace(tzinfo=None),
+                            device_rows[-1][2].replace(tzinfo=None),
+                        ])
+            sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
+        output = io.BytesIO()
+        workbook.save(output)
+    except Exception:
+        # openpyxl cleans these temporary XML files after a successful save.
+        # An over-limit room or database failure must also release partial files.
+        for sheet in workbook.worksheets:
+            try:
+                if not sheet.closed:
+                    sheet.close()
+                writer = sheet._writer
+                if writer is not None and os.path.exists(writer.out):
+                    writer.cleanup()
+            except Exception:
+                pass  # Preserve the original export error if cleanup also fails.
+        raise
     output.seek(0)
     return StreamingResponse(
         output,

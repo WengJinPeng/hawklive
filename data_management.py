@@ -95,6 +95,7 @@ def register_data_management(api: Any) -> None:
                              AND a.event_uuid=n.event_uuid AND a.device_id=ANY(%s))""",
                         (customer_id, retired_ids),
                     )
+                    db.execute("DELETE FROM collector_quarantine_records WHERE customer_id=%s AND device_id=ANY(%s)", (customer_id, retired_ids))
                     db.execute("DELETE FROM alarm_events WHERE customer_id=%s AND device_id=ANY(%s)", (customer_id, retired_ids))
                     db.execute("DELETE FROM latest_readings WHERE customer_id=%s AND device_id=ANY(%s)", (customer_id, retired_ids))
                     db.execute("DELETE FROM readings WHERE customer_id=%s AND device_id=ANY(%s)", (customer_id, retired_ids))
@@ -103,6 +104,7 @@ def register_data_management(api: Any) -> None:
                     db.execute("DELETE FROM device_assignment_periods WHERE customer_id=%s AND device_id=ANY(%s)", (customer_id, retired_ids))
                     db.execute("DELETE FROM devices WHERE customer_id=%s AND NOT enabled AND id=ANY(%s)", (customer_id, retired_ids))
             else:
+                db.execute("DELETE FROM collector_quarantine_records WHERE customer_id=%s", (customer_id,))
                 db.execute("DELETE FROM email_notifications WHERE customer_id=%s", (customer_id,))
                 db.execute("DELETE FROM alarm_events WHERE customer_id=%s", (customer_id,))
                 db.execute("DELETE FROM latest_readings WHERE customer_id=%s", (customer_id,))

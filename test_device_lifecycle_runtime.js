@@ -66,14 +66,24 @@ test('archived history shortcut selects the original ID across workshops',async(
   assert.equal(h.el('historyScopeInput').value,'all');assert.equal(h.run("historySelectedDeviceIds.has('device')"),true);
   assert.equal(h.run('historySelectedDeviceIds.size'),1);assert.equal(h.run('chosenView'),'history');assert.equal(h.run('chosenHours'),168);
 });
-test('wallboard keeps maintenance distinct from normal without masking alarms or disconnection',()=>{
+test('wallboard keeps maintenance separate from current data availability',()=>{
   const source=fs.readFileSync(__dirname+'/public/wallboard.js','utf8');
-  const fn=source.slice(source.indexOf('function deviceState('),source.indexOf('function statePriority('));
-  const context=vm.createContext({reading:{online:true,maintenance:{until:Date.now()/1000+60}},readingFor(){return this.reading;},isFresh:()=>true});
-  vm.runInContext('readingFor=()=>reading;',context);vm.runInContext(fn,context);
-  assert.equal(vm.runInContext("deviceState({id:'device'})",context),'maintenance');
-  context.reading.alarm_status='ALARM_ACTIVE';assert.equal(vm.runInContext("deviceState({id:'device'})",context),'alarm');
-  context.reading.online=false;assert.equal(vm.runInContext("deviceState({id:'device'})",context),'offline');
+  const context=vm.createContext({console,Date,Map,Set,URLSearchParams,location:{search:''}});
+  vm.runInContext(source,context);
+  const current=Date.now()/1000;
+  vm.runInContext(`latestByDevice.set('device',{online:true,timestamp:${current},maintenance:{until:${current+60}}})`,context);
+  assert.equal(vm.runInContext("inMaintenance({id:'device'})",context),true);
+  assert.equal(vm.runInContext("dataState({id:'device'})",context),'normal');
+  vm.runInContext('feed.config.ok=true;feed.latest.ok=true;feed.alarms.ok=true;room={id:"room",devices:[{id:"device"}]}',context);
+  assert.equal(vm.runInContext('roomInfo(room,[]).state',context),'maintenance');
+  assert.equal(vm.runInContext('roomInfo(room,[{roomId:"room",state:"alarm"}]).state',context),'alarm');
+  vm.runInContext("latestByDevice.get('device').online=false",context);
+  assert.equal(vm.runInContext("dataState({id:'device'})",context),'offline');
+  assert.equal(vm.runInContext('roomInfo(room,[]).state',context),'gap');
+  assert.equal(vm.runInContext('roomInfo(room,[{roomId:"room",state:"alarm"}]).state',context),'alarm');
+  assert.equal(vm.runInContext("inMaintenance({id:'device'})",context),true);
+  vm.runInContext("latestByDevice.get('device').maintenance=null",context);
+  assert.equal(vm.runInContext("inMaintenance({id:'device'})",context),false);
 });
 
 test('IP changes require explicit physical identity confirmation and a valid address',async()=>{

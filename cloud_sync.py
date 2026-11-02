@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 from device_discovery import scan_modbus_networks
 from collector_diagnostics import init_queue, enqueue, prune_queue, redact, diagnostic_scope
 
-COLLECTOR_VERSION = "0.6.10"
+COLLECTOR_VERSION = "0.6.11"
 
 
 def canonical_uuid(value: object) -> str:
@@ -102,6 +102,7 @@ class CloudSyncService:
         self._channel_errors: dict[str, str] = {}
         self._config_ready = threading.Event()
         self._last_diagnostic_snapshot = 0.0
+        self._maintenance = None
         with self.connect() as db:
             init_queue(db)
 
@@ -377,6 +378,7 @@ class CloudSyncService:
                 "site_id": self.site_id,
                 "collector_time": time.time(),
                 "version": COLLECTOR_VERSION,
+                "maintenance_protocol": 1,
                 "hostname": socket.gethostname()[:200] or "unknown",
                 "platform": platform.platform()[:200] or platform.system() or "unknown",
                 "monitor_running": bool(context.get("monitor_running", True)),
@@ -944,6 +946,14 @@ class CloudSyncService:
         if self._thread:
             self._thread.join(timeout=25)
 
+    def sync_maintenance_once(self) -> int:
+        from collector_maintenance import CollectorMaintenance
+        if not self.customer_id:
+            return 0
+        if self._maintenance is None:
+            self._maintenance = CollectorMaintenance(self)
+        return self._maintenance.once()
+
     def _run_channel(self, name: str, action: Callable[[], int], interval: float, drain: bool = False) -> None:
         self._channel_context.name = name
         failure_count = 0
@@ -980,6 +990,7 @@ class CloudSyncService:
             ("readings", self.sync_once, 10.0, True),
             ("alarms", self.sync_alarms_once, 10.0, True),
             ("diagnostics", self.sync_diagnostics_once, 30.0, True),
+            ("maintenance", self.sync_maintenance_once, 30.0, False),
         ]
         if self.remote_discovery_enabled:
             channels.append(("discovery", self.pull_discovery_job_once, self.discovery_interval, False))

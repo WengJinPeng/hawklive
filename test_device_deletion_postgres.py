@@ -238,7 +238,10 @@ class DeviceDeletionPostgresTests(unittest.TestCase):
         newer = cloud_api.ReadingBatch(site_id=identity["site_id"], readings=[dict(self.cached_reading(time.time()+1), record_uuid=uuid4())])
         with self.assertRaises(cloud_api.HTTPException) as rejected:
             cloud_api.ingest_batch(newer, identity)
-        self.assertEqual(rejected.exception.status_code, 403)
+        # An owned device with an invalid historical time is an item rejection,
+        # preserving the deployed collector's 422 isolation/retry contract.
+        self.assertEqual(rejected.exception.status_code, 422)
+        self.assertEqual(rejected.exception.detail, "Measurement time is outside the device assignment period")
         wrong_site = {**identity, "site_id": f'{identity["customer_id"]}-other'}
         with self.assertRaises(cloud_api.HTTPException):
             cloud_api.ingest_batch(cloud_api.ReadingBatch(site_id=wrong_site["site_id"], readings=[

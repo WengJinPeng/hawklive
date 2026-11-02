@@ -2,7 +2,7 @@ name: Windows collector build and update verification
 on:
   workflow_dispatch:
   push:
-    branches: [main, codex/collector-auto-update, codex/reconnect-0.6.4, codex/startup-diagnostics-0.6.5, codex/tls-roots-0.6.6, codex/network-recovery-0.6.7, codex/network-recovery-0.6.8, codex/disconnect-recovery-0.6.9, codex/link-diagnostics-0.6.10]
+    branches: [main, codex/collector-auto-update, codex/reconnect-0.6.4, codex/startup-diagnostics-0.6.5, codex/tls-roots-0.6.6, codex/network-recovery-0.6.7, codex/network-recovery-0.6.8, codex/disconnect-recovery-0.6.9, codex/link-diagnostics-0.6.10, codex/quarantine-maintenance-20261102]
     paths-ignore:
       - 'release/**'
       - '**.md'
@@ -23,7 +23,7 @@ jobs:
       - name: Install build and test dependencies
         run: python -m pip install -r requirements-build-windows.txt -r requirements-cloud.txt 'httpx>=0.27,<1'
       - name: Verify updater and existing collector contracts
-        run: python -m unittest test_windows_power test_collector_updater test_windows_install test_windows_launcher test_cloud_tls test_network_recovery test_device_link_diagnostics test_collector_startup test_collector_activation test_collector_enrollment test_package_cleanup test_connection_status test_collector_settings test_runtime_foundation test_runtime_migration test_device_recovery test_dcp8001_collector test_monitoring test_storage_maintenance test_backup_instance_safety -q
+        run: python -m unittest test_collector_maintenance test_windows_power test_collector_updater test_windows_install test_windows_launcher test_cloud_tls test_network_recovery test_device_link_diagnostics test_collector_startup test_collector_activation test_collector_enrollment test_package_cleanup test_connection_status test_collector_settings test_runtime_foundation test_runtime_migration test_device_recovery test_dcp8001_collector test_monitoring test_storage_maintenance test_backup_instance_safety -q
       - name: Build collector EXE
         shell: pwsh
         run: |
@@ -40,7 +40,7 @@ jobs:
         env:
           DCP_UPDATER_ISOLATED_WINDOWS_QA: '1'
           DCP_UPDATE_TEST_EXE: ${{ github.workspace }}\release\HawkHive-DPC8001-Collector.exe
-        run: python -m unittest test_windows_update_e2e -v
+        run: python -m unittest test_windows_update_e2e test_windows_maintenance_e2e -v
       - name: Retain verified unsigned build for release signing
         uses: actions/upload-artifact@v7
         with:
@@ -50,3 +50,29 @@ jobs:
             release/HawkHive-DPC8001-Collector.exe.sha256
           retention-days: 14
           if-no-files-found: error
+  maintenance-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: maintenanceqa
+          POSTGRES_USER: maintenanceqa
+          POSTGRES_PASSWORD: isolated-fixture-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U maintenanceqa -d maintenanceqa"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DCP_MAINTENANCE_TEST_DATABASE_URL: postgresql://maintenanceqa:isolated-fixture-only@127.0.0.1:5432/maintenanceqa
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-test-windows.txt -r requirements-cloud.txt 'httpx>=0.27,<1'
+      - name: Verify authenticated maintenance and retained-data contracts
+        run: python -m unittest test_collector_maintenance test_maintenance_api test_cloud_excel_export test_export_api test_security_boundaries -v
+      - name: Verify quarantine dialog safety and retained UI behavior
+        run: node --test test_quarantine_runtime.js test_i18n_runtime.js test_device_lifecycle_runtime.js test_device_deletion_runtime.js test_data_management_runtime.js

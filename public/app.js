@@ -527,6 +527,7 @@ function renderCollectorNodes() {
       <div class="collector-node-actions">
       ${state.key === "waiting" && !site.is_current ? `<button class="secondary-action collector-package-action" type="button" data-download-collector-package="${escapeHtml(site.id)}">下载自动安装包</button>` : ""}
       ${topologyCapabilities.diagnostic_logs ? `<button class="secondary-action" type="button" data-collector-diagnostics="${escapeHtml(site.id)}">诊断日志</button>` : ""}
+      ${topologyCapabilities.quarantine_maintenance ? `<button class="secondary-action" type="button" data-collector-quarantine="${escapeHtml(site.id)}">隔离读数</button>` : ""}
       ${topologyCapabilities.can_retire_collectors ? `<button class="secondary-action" type="button" data-retire-collector="${escapeHtml(site.id)}" ${site.can_retire ? "" : "disabled"} title="${escapeHtml(uiText(site.assigned_device_count ? "请先转移关联设备" : "请先退出现场采集程序并等待离线"))}">移除采集器</button>` : ""}
       </div>
       ${error ? `<p class="collector-node-error"><strong>需要检查：</strong>${escapeHtml(error)}</p>` : ""}

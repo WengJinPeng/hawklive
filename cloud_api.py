@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from alarm_config import DEFAULT_THRESHOLDS, normalise_alarm_thresholds
 from auth_service import AuthService
+from trend_aggregation import mean_trend_reading, mean_trend_sql, validate_mean_window
 from email_alerts import enqueue_alarm
 from email_api import register_email_routes
 from diagnostics_api import register_diagnostic_routes
@@ -257,6 +258,7 @@ class CollectorHeartbeat(BaseModel):
     site_id: str = Field(min_length=1, max_length=200)
     collector_time: float = Field(gt=0)
     version: str = Field(min_length=1, max_length=80)
+    maintenance_protocol: Literal[0, 1] = 0
     hostname: str = Field(min_length=1, max_length=200)
     platform: str = Field(min_length=1, max_length=200)
     monitor_running: bool
@@ -455,6 +457,7 @@ def initialize_schema() -> None:
     schema = Path(__file__).with_name("cloud_schema.sql").read_text(encoding="utf-8")
     with connect() as db:
         db.execute(schema)
+        db.execute(Path(__file__).with_name("maintenance_schema.sql").read_text(encoding="utf-8"))
 
 
 def edge_identity(
@@ -1753,6 +1756,7 @@ def get_admin_sites(
             "legacy_contact": legacy_contact,
             "is_current": False,
             "version": status.get("version"),
+            "maintenance_protocol": status.get("maintenance_protocol", 0),
             "update_status": status.get("update_status") or {"enabled": False, "state": "manual_upgrade_required"},
             "hostname": status.get("hostname"),
             "platform": status.get("platform"),
@@ -1789,6 +1793,7 @@ def get_admin_sites(
             "management_scope": "customer",
             "can_create_collectors": True,
             "diagnostic_logs": True,
+            "quarantine_maintenance": True,
             "collector_update": release_summary(),
             "can_download_collector": True,
             "scope_notice": "可在这里管理本客户的全部采集器节点。",
@@ -2897,11 +2902,18 @@ def customer_trends(
     end: float | None = None,
     max_points: int = Query(default=240, ge=20, le=600),
     user: dict[str, object] = Depends(customer_user),
+    aggregation: Literal["sample", "mean"] = "sample",
+    bucket_seconds: int = 300,
 ) -> dict[str, object]:
-    """Return an evenly sampled time series for every selected device."""
+    """Return samples or fixed-window means for every selected device."""
     customer_id = str(user["customer_id"])
     end = end if end is not None else time.time()
     start = start if start is not None else end - 3600
+    if aggregation == "mean":
+        try:
+            validate_mean_window(start, end, bucket_seconds)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if start >= end:
         raise HTTPException(status_code=400, detail="Start time must be before end time")
 
@@ -2915,6 +2927,15 @@ def customer_trends(
     if requested_device_ids:
         clauses.append(f"device_id IN ({','.join('%s' for _ in requested_device_ids)})")
         params.extend(requested_device_ids)
+    if aggregation == "mean":
+        with connect() as db:
+            rows = db.execute(
+                mean_trend_sql("postgres", " AND ".join(clauses)),
+                (bucket_seconds, *params),
+            ).fetchall()
+        return {"ok": True, "data": [
+            mean_trend_reading(row, start, end, bucket_seconds) for row in rows
+        ]}
     params.append(max_points)
 
     with connect() as db:
@@ -3352,8 +3373,10 @@ def ingest_alarms(batch: AlarmBatch, identity: dict[str, str] = Depends(edge_ide
 
 register_email_routes(app, connect, topology_manager, record_configuration_audit)
 register_diagnostic_routes(app, connect, topology_manager, edge_identity)
-from device_lifecycle import register_device_lifecycle
+from maintenance_api import register_maintenance
 import sys
+register_maintenance(sys.modules[__name__])
+from device_lifecycle import register_device_lifecycle
 register_device_lifecycle(sys.modules[__name__])
 from data_management import register_data_management
 register_data_management(sys.modules[__name__])

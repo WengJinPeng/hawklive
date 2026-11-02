@@ -429,10 +429,29 @@
       <p class="diagnostics-help">日志已脱敏。云端最多保留 30 天、每节点 50,000 条；无日志时请确认采集器已升级并已完成配置同步。</p>
     </dialog>
 
+    <dialog id="quarantineDialog" class="management-dialog diagnostics-dialog quarantine-dialog" aria-labelledby="quarantineTitle">
+      <header><div><h2 id="quarantineTitle">隔离读数</h2><p id="quarantineNode" data-i18n-ignore></p></div><button id="closeQuarantine" type="button">关闭</button></header>
+      <p class="diagnostics-help">查看现场上报的原始记录，校验后可按指定 UUID 补传。原始数据和备份保留，实时采集与报警继续运行。</p>
+      <div class="quarantine-toolbar"><p id="quarantineSnapshotInfo" role="status"></p><button id="refreshQuarantine" type="button">刷新隔离详情</button></div>
+      <p id="quarantineStatus" role="status" aria-live="polite"></p>
+      <div id="quarantineResults" class="diagnostics-results"></div>
+      <button id="moreQuarantine" type="button" hidden>加载更多隔离读数</button>
+      <form id="quarantineConfirmation" class="quarantine-confirmation" hidden>
+        <h3>确认指定记录补传</h3>
+        <p>仅处理下方 UUID 对应的原始读数；云端确认接收后才更新本地同步状态。</p>
+        <code id="quarantineSelectedUuid" data-i18n-ignore></code>
+        <label><span>输入完整 UUID 确认</span><input id="quarantineConfirmUuid" autocomplete="off" spellcheck="false" maxlength="36" /></label>
+        <p id="quarantineConfirmError" class="form-error" role="alert"></p>
+        <div class="quarantine-confirm-actions"><button id="cancelQuarantineRetry" type="button">取消</button><button id="confirmQuarantineRetry" class="primary" type="submit" disabled>备份并补传此条读数</button></div>
+      </form>
+      <section class="quarantine-task-history"><h3>补传记录</h3><div id="quarantineTasks"></div></section>
+    </dialog>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="./i18n.js?v=20261007-network-recovery-v2"></script>
     <script src="./app.js?v=20261007-network-recovery-v2"></script>
     <script src="./diagnostics.js?v=20261007-network-recovery-v2"></script>
+    <script src="./quarantine-maintenance.js?v=20261102-maintenance-v1"></script>
     <script src="./device-lifecycle.js?v=20260908-data-management"></script>
   </body>
 </html>

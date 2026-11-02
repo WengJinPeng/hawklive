@@ -104,7 +104,7 @@
     if (!item) return;
     busy = true; clearConfirmation(); render(); status('正在校验原始记录…');
     try {
-      const result = await api(`${scope()}/${encodeURIComponent(entryId)}/validate`, {method:'POST',body:'{}'});
+      const result = await api(`${scope()}/${encodeURIComponent(entryId)}/validate`, {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
       if (!active(id)) return;
       item.validation = result;
       status(result.valid ? '校验通过，可申请补传' : '校验未通过，保留隔离');
@@ -134,7 +134,7 @@
     const id = epoch, approval = selected;
     busy = true; render();
     try {
-      await api(`${scope()}/${encodeURIComponent(approval.item.id)}/retry`, {method:'POST', body:JSON.stringify({
+      await api(`${scope()}/${encodeURIComponent(approval.item.id)}/retry`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
         request_id:approval.requestId,validation_id:approval.item.validation.id,
         raw_sha256:approval.item.raw_sha256,record_uuid:approval.item.record_id,
       })});

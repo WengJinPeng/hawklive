@@ -141,7 +141,11 @@ class NativeMaintenanceTests(unittest.TestCase):
         self.original=reading(customer_id='maintenance-fixture',site_id='maintenance-site',cleanroom_id='maintenance-room',device_id='maintenance-device')
         self.insert_reading(self.original,quarantined=True)
         with closing(sqlite3.connect(self.database)) as db, db:
-            db.execute("INSERT INTO alarm_events(id,customer_id,site_id,cleanroom_id,device_id,source,metric,started_at,ended_at,limit_description,synced_at) VALUES('protected-fixture-alarm','maintenance-fixture','maintenance-site','maintenance-room','maintenance-device','device','protected',1000,1001,'retained',1001)")
+            # Keep the alarm within the normal archive window. A 1970 fixture
+            # is legitimately archived by the unmodified collector on startup.
+            now=time.time();db.row_factory=sqlite3.Row
+            db.execute("INSERT INTO alarm_events(id,customer_id,site_id,cleanroom_id,device_id,source,metric,started_at,ended_at,limit_description,synced_at) VALUES('protected-fixture-alarm','maintenance-fixture','maintenance-site','maintenance-room','maintenance-device','device','protected',?,?,'retained',?)",(now-30,now-20,now))
+            self.protected_alarm=dict(db.execute("SELECT * FROM alarm_events WHERE id='protected-fixture-alarm'").fetchone())
         self.original_row=self.local_row(self.original['record_uuid'])
         self.loopback=LoopbackMaintenance(self.private,readonly);self.addCleanup(self.loopback.close)
         self.settings=self.root/'data/collector_settings.json'
@@ -163,7 +167,9 @@ class NativeMaintenanceTests(unittest.TestCase):
 
     def assert_preserved(self):
         self.assertEqual(hashlib.sha256(self.settings.read_bytes()).hexdigest(),self.settings_digest)
-        with closing(sqlite3.connect(self.database)) as db, db:self.assertEqual(db.execute("SELECT synced_at,ended_at FROM alarm_events WHERE id='protected-fixture-alarm'").fetchone(),(1001,1001))
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.row_factory=sqlite3.Row
+            self.assertEqual(dict(db.execute("SELECT * FROM alarm_events WHERE id='protected-fixture-alarm'").fetchone()),self.protected_alarm)
         self.assertTrue(self.supervisor.health()['monitor_running'])
 
     def test_shipping_exe_reports_details_while_history_and_alarm_uploads_continue(self):

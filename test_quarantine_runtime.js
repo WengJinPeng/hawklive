@@ -70,6 +70,7 @@ test('lost submit responses reuse one request ID and accepted status waits for l
   await h.submit();assert.match(h.el('quarantineConfirmError').textContent,/未获确认/);
   await h.submit();
   const bodies=h.requests.filter(r=>r.options?.method==='POST').map(r=>JSON.parse(r.options.body));
+  assert.ok(h.requests.filter(r=>r.options?.method==='POST').every(r=>r.options.headers['Content-Type']==='application/json'));
   assert.equal(bodies.length,2);assert.equal(bodies[0].request_id,bodies[1].request_id);
   assert.match(h.el('quarantineTasks').innerHTML,/等待本地确认/);
   assert.doesNotMatch(h.el('quarantineTasks').innerHTML,/补传完成/);

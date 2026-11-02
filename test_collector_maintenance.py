@@ -151,6 +151,10 @@ class CollectorMaintenanceTests(unittest.TestCase):
         task=self.task();original=self.state()
         self.client.prepare(task)
         self.assertEqual(self.state(),original)
+        with self.service.connect() as db:self.assertEqual(db.execute('SELECT state FROM maintenance_reading_backups').fetchone()[0],'prepared')
+        self.client.request=lambda *_args,**_kw: (_ for _ in ()).throw(TimeoutError('disconnected'))
+        with self.assertRaises(TimeoutError):self.client.once()
+        self.assertEqual(self.state(),original)
 
     def test_large_quarantine_rotates_reports_and_failed_report_keeps_its_page(self):
         with self.service.connect() as db:
@@ -167,10 +171,6 @@ class CollectorMaintenanceTests(unittest.TestCase):
         self.client.request=lambda *_: (_ for _ in ()).throw(TimeoutError('failed report'))
         with self.assertRaises(TimeoutError):self.client.once()
         self.assertEqual(self.client.snapshot_cursor,cursor)
-        with self.service.connect() as db:self.assertEqual(db.execute('SELECT state FROM maintenance_reading_backups').fetchone()[0],'prepared')
-        self.client.request=lambda *_args,**_kw: (_ for _ in ()).throw(TimeoutError('disconnected'))
-        with self.assertRaises(TimeoutError):self.client.once()
-        self.assertEqual(self.state(),original)
 
     def test_changed_wrong_scope_nonquarantined_and_ambiguous_uuid_are_not_sent(self):
         task=self.task()

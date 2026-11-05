@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ipaddress
+import json
+from functools import wraps
 import os
 import sqlite3
 import threading
@@ -20,6 +22,7 @@ from alarm_config import (
 from auth_service import DEFAULT_CUSTOMER_ID
 from dcp8001_collector import Dcp8001TcpClient, ModbusExceptionResponse
 from collector_diagnostics import diagnostic_scope
+from device_identity import IdentityVerifier, IdentityError, normalize_mac
 from network_recovery import NetworkRecovery
 from device_link_diagnostics import DeviceLinkDiagnostics
 
@@ -64,6 +67,14 @@ MAX_ACTIVE_DEVICES = max(1, min(_env_int("DCP_MAX_ACTIVE_DEVICES", 100), 1000))
 MAX_CLEANROOMS = max(1, min(_env_int("DCP_MAX_CLEANROOMS", 200), 1000))
 
 
+def _configuration_change(method):
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._configuration_gate:
+            return method(self, *args, **kwargs)
+    return locked
+
+
 class MonitoringService:
     """Continuously reads devices, evaluates alarms and periodically persists readings."""
 
@@ -97,6 +108,8 @@ class MonitoringService:
         self._network_recovery = NetworkRecovery()
         self._network_reprobe_ids = set()
         self._link_diagnostics = DeviceLinkDiagnostics(self._log_diagnostic)
+        self._identity_verifier = IdentityVerifier()
+        self._configuration_gate = threading.RLock()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -193,6 +206,14 @@ class MonitoringService:
                 "ON cleanrooms(customer_id, lower(name))"
             )
             device_columns = {row[1] for row in db.execute("PRAGMA table_info(devices)")}
+            for column, definition in {"identity_required": "INTEGER NOT NULL DEFAULT 0", "expected_mac": "TEXT"}.items():
+                if column not in device_columns:
+                    db.execute(f"ALTER TABLE devices ADD COLUMN {column} {definition}")
+            db.execute("""CREATE TABLE IF NOT EXISTS identity_unverified_samples (
+                id TEXT PRIMARY KEY,customer_id TEXT NOT NULL,site_id TEXT NOT NULL,
+                device_hint TEXT NOT NULL,host TEXT NOT NULL,measured_at REAL NOT NULL,
+                observed_before TEXT,observed_after TEXT,reason TEXT NOT NULL,raw_json TEXT NOT NULL)""")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_identity_unverified_scope ON identity_unverified_samples(customer_id,site_id,device_hint,measured_at)")
             if "site_id" not in device_columns:
                 db.execute("ALTER TABLE devices ADD COLUMN site_id TEXT")
             if "disabled_at" not in device_columns:
@@ -383,6 +404,8 @@ class MonitoringService:
                         "enabled": bool(row["enabled"]),
                         "site_id": row["site_id"] or "",
                         "last_seen_at": row["last_seen_at"],
+                        "identity_required": bool(row["identity_required"]),
+                        "expected_mac": row["expected_mac"],
                         "online": bool(
                             row["last_seen_at"]
                             and time.time() - float(row["last_seen_at"]) <= 45
@@ -566,6 +589,7 @@ class MonitoringService:
             )
         return self.configuration(customer_id)
 
+    @_configuration_change
     def apply_edge_configuration(self, payload: dict[str, object]) -> None:
         customer_id = str(payload.get("customer_id", "")).strip()
         site_id = str(payload.get("site_id", "")).strip()
@@ -687,6 +711,15 @@ class MonitoringService:
                         """,
                         (device_id,room_id,site_id,name,host,tcp_port,slave,device_order),
                     )
+                    # Missing fields from an older cloud must not downgrade a binding.
+                    if "identity_required" in device:
+                        required = device["identity_required"]
+                        if type(required) is not bool:
+                            raise ValueError("identity_required must be boolean")
+                        expected = device.get("expected_mac")
+                        expected = normalize_mac(expected) if expected else None
+                        db.execute("UPDATE devices SET identity_required=?,expected_mac=? WHERE id=? AND site_id=?",
+                                   (int(required), expected, device_id, site_id))
             db.execute("PRAGMA optimize")
         with self._lock:
             self.latest = {key: value for key, value in self.latest.items() if key in active_ids}
@@ -1254,7 +1287,26 @@ class MonitoringService:
                         if self._stop.is_set():
                             self._close_device_client(device_id)
                             return
+                        guarded = bool(device.get("identity_required"))
+                        before = self._identity_verifier.observe(str(device["host"])) if guarded else None
                         reading = client.read_realtime()
+                        if guarded:
+                            after = None
+                            try:
+                                after = self._identity_verifier.observe(str(device["host"]))
+                                self._identity_verifier.check(device.get("expected_mac"), before, after)
+                                # A concurrent cloud edit must not relabel an in-flight sample.
+                                with self.connect() as db:
+                                    current = db.execute("SELECT host,tcp_port,slave,expected_mac,identity_required,site_id,enabled FROM devices WHERE id=?", (device_id,)).fetchone()
+                                wanted = (str(device["host"]),int(device["tcpPort"]),int(device["slave"]),device.get("expected_mac"),1,device.get("site_id"),1)
+                                if current is None or tuple(current) != wanted:
+                                    raise IdentityError("Device configuration changed during sampling")
+                            except Exception as exc:
+                                try:
+                                    self._retain_identity_sample(room, device, reading, before, after, str(exc))
+                                except Exception as storage_error:
+                                    raise IdentityError(f"Identity sample withheld; retention failed ({type(storage_error).__name__})") from storage_error
+                                raise
                     except Exception as exc:
                         # Evict ambiguous/broken streams while holding the I/O
                         # lock. Complete application rejections retain framing.
@@ -1264,63 +1316,108 @@ class MonitoringService:
                 source = "device"
         except Exception as exc:
             if not self._stop.is_set():
+                if isinstance(exc, IdentityError):
+                    self._log_diagnostic("ERROR", "device_identity_blocked",
+                        json.dumps({"device_id":device_id,"host":device["host"],"reason":str(exc)}))
+                    with self._lock:
+                        # Never offer a cached value as fresh during identity uncertainty.
+                        self.latest.pop(device_id, None)
                 self._device_read_failed(room, device, client, exc, started)
             return
 
         if source == "device":
             self._record_read_retry(device, client)
 
-        # Disk/alarm errors must not churn a healthy embedded gateway session.
-        # Only publish a new sample after its alarm evaluation succeeds.
-        try:
-            data = reading if isinstance(reading, dict) else reading.__dict__
-            data = dict(data)
-            data.update(
-                {
-                    "cleanroom_id": room["id"],
-                    "customer_id": room["customer_id"],
-                    "cleanroom": room["name"],
-                    "device_id": device["id"],
-                    "device": device["name"],
-                    "host": device["host"],
-                    "site_id": device.get("site_id", ""),
-                    "source": source,
-                    "online": True,
-                    "last_reading_at": data["timestamp"],
-                    "connection_checked_at": time.time(),
-                }
-            )
-            changed = self._evaluate_alarms(data, room["thresholds"])
-            with self._lock:
-                previous = self.latest.get(device_id, {})
-                first_read = not previous
-                recovered_failures = self._device_failures.get(device_id, 0)
-            now = float(data["timestamp"])
-            needs_save = (first_read or recovered_failures or changed or previous.get("storage_error")
-                          or now - self.last_recorded.get(device_id, 0) >= self.options.record_seconds)
-            if needs_save:
-                try:
-                    self._persist_sample(data)
-                except Exception as exc:
-                    data["storage_error"] = str(exc)
-                    self._log_diagnostic("ERROR", "device_sample_save_failed", f"device={device_id}: {exc}")
-            with self._lock:
-                self.latest[str(device["id"])] = data
-                self._device_failures.pop(str(device["id"]), None)
-                self._failure_log_state.pop(device_id, None)
-                self._next_poll_at[str(device["id"])] = (
-                    time.monotonic() + max(0.1, self.options.poll_seconds)
+        with self._configuration_gate:
+            # Disk/alarm errors must not churn a healthy embedded gateway session.
+            # Only publish a new sample after its alarm evaluation succeeds.
+            try:
+                if source == "device":
+                    with self.connect() as db:
+                        current = db.execute("SELECT host,tcp_port,slave,expected_mac,identity_required,site_id,enabled FROM devices WHERE id=?", (device_id,)).fetchone()
+                    if guarded or (current is not None and current[4]):
+                        wanted = (str(device["host"]),int(device["tcpPort"]),int(device["slave"]),device.get("expected_mac"),int(guarded),device.get("site_id"),1)
+                        if current is None or tuple(current) != wanted:
+                            try:
+                                self._retain_identity_sample(room, device, reading, before, None, "Configuration changed before publication")
+                            finally:
+                                raise IdentityError("Configuration changed before publication")
+                data = reading if isinstance(reading, dict) else reading.__dict__
+                data = dict(data)
+                data.update(
+                    {
+                        "cleanroom_id": room["id"],
+                        "customer_id": room["customer_id"],
+                        "cleanroom": room["name"],
+                        "device_id": device["id"],
+                        "device": device["name"],
+                        "host": device["host"],
+                        "site_id": device.get("site_id", ""),
+                        "source": source,
+                        "online": True,
+                        "last_reading_at": data["timestamp"],
+                        "connection_checked_at": time.time(),
+                    }
                 )
-            if source == "device" and (first_read or recovered_failures):
-                self._log_diagnostic("INFO", "device_recovered" if recovered_failures else "device_connected",
-                             f"{device['name']}: device={device_id} endpoint={endpoint} "
-                             f"read_ms={round((time.monotonic()-started)*1000)} "
-                             f"recovered_after_failures={recovered_failures} poll_seconds={self.options.poll_seconds} "
-                             f"last_success_at={previous.get('last_reading_at')} recovered_at={now}")
-        except Exception as exc:
-            self._log_diagnostic("ERROR", "device_sample_processing_failed", f"device={device_id}: {exc}")
-            with self._lock:
-                self._next_poll_at[device_id] = time.monotonic() + max(0.1, self.options.poll_seconds)
+                changed = self._evaluate_alarms(data, room["thresholds"])
+                with self._lock:
+                    previous = self.latest.get(device_id, {})
+                    first_read = not previous
+                    recovered_failures = self._device_failures.get(device_id, 0)
+                now = float(data["timestamp"])
+                needs_save = (first_read or recovered_failures or changed or previous.get("storage_error")
+                              or now - self.last_recorded.get(device_id, 0) >= self.options.record_seconds)
+                if needs_save:
+                    try:
+                        self._persist_sample(data)
+                    except Exception as exc:
+                        data["storage_error"] = str(exc)
+                        self._log_diagnostic("ERROR", "device_sample_save_failed", f"device={device_id}: {exc}")
+                with self._lock:
+                    self.latest[str(device["id"])] = data
+                    self._device_failures.pop(str(device["id"]), None)
+                    self._failure_log_state.pop(device_id, None)
+                    self._next_poll_at[str(device["id"])] = (
+                        time.monotonic() + max(0.1, self.options.poll_seconds)
+                    )
+                if source == "device" and (first_read or recovered_failures):
+                    self._log_diagnostic("INFO", "device_recovered" if recovered_failures else "device_connected",
+                                 f"{device['name']}: device={device_id} endpoint={endpoint} "
+                                 f"read_ms={round((time.monotonic()-started)*1000)} "
+                                 f"recovered_after_failures={recovered_failures} poll_seconds={self.options.poll_seconds} "
+                                 f"last_success_at={previous.get('last_reading_at')} recovered_at={now}")
+            except Exception as exc:
+                if isinstance(exc, IdentityError):
+                    with self._lock:
+                        self.latest.pop(device_id, None)
+                    self._device_read_failed(room, device, client, exc, started)
+                    self._log_diagnostic("ERROR", "device_identity_blocked", f"device={device_id}: {exc}")
+                    return
+                self._log_diagnostic("ERROR", "device_sample_processing_failed", f"device={device_id}: {exc}")
+                with self._lock:
+                    self._next_poll_at[device_id] = time.monotonic() + max(0.1, self.options.poll_seconds)
+
+    def _retain_identity_sample(self, room, device, reading, before, after, reason):
+        """Preserve unassigned raw samples outside readings/alarm/upload tables.
+
+        Retain at the normal history cadence. Never auto-promote or auto-prune.
+        Database/disk failure propagates and cannot authorize a sample.
+        """
+        raw = dict(reading if isinstance(reading, dict) else reading.__dict__)
+        measured = float(raw["timestamp"])
+        with self.connect() as db:
+            previous = db.execute("""SELECT max(measured_at) FROM identity_unverified_samples
+                WHERE customer_id=? AND site_id=? AND device_hint=?""",
+                (room["customer_id"],device.get("site_id", ""),device["id"])).fetchone()[0]
+            if previous is not None and 0 <= measured-float(previous) < self.options.record_seconds:
+                return
+            db.execute("""INSERT INTO identity_unverified_samples VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()),room["customer_id"],device.get("site_id", ""),device["id"],
+                 device["host"],measured,json.dumps(before),json.dumps(after),reason[:500],
+                 json.dumps(raw,allow_nan=False)))
+        self._log_diagnostic("WARNING", "device_identity_unverified_sample",
+            json.dumps({"device_id":device["id"],"host":device["host"],
+                        "before":before,"after":after,"reason":reason[:500]}))
 
     def _device_read_failed(
         self, room: dict[str, object], device: dict[str, object],

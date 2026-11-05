@@ -458,6 +458,7 @@ def initialize_schema() -> None:
     with connect() as db:
         db.execute(schema)
         db.execute(Path(__file__).with_name("maintenance_schema.sql").read_text(encoding="utf-8"))
+        db.execute(Path(__file__).with_name("identity_schema.sql").read_text(encoding="utf-8"))
 
 
 def edge_identity(
@@ -2707,6 +2708,17 @@ def edge_configuration_payload(identity: dict[str, str]) -> dict[str, object]:
         rooms = configuration_for_site(
             customer_configuration(identity["customer_id"], db=db), identity["site_id"],
         )
+        bindings = db.execute(
+            """SELECT device_id,expected_mac,required FROM device_identity_bindings
+               WHERE customer_id=%s AND site_id=%s""",
+            (identity["customer_id"],identity["site_id"]),
+        ).fetchall()
+        approved = {str(item[0]): item for item in bindings}
+        for room in rooms:
+            for device in room["devices"]:
+                if str(device["id"]) in approved:
+                    binding = approved[str(device["id"])]
+                    device.update(expected_mac=binding[1],identity_required=bool(binding[2]))
         row = db.execute(
             "SELECT config_version,name FROM sites WHERE id=%s AND customer_id=%s AND retired_at IS NULL",
             (identity["site_id"], identity["customer_id"]),

@@ -126,3 +126,23 @@ class GuardedSampling(unittest.TestCase):
         payload['rooms'][0]['devices'][0].update(identity_required=True,expected_mac=B)
         self.service.apply_edge_configuration(payload)
         self.assertEqual(self.service.configuration()[0]['devices'][0]['expected_mac'],B)
+
+class CandidateEvidence(unittest.TestCase):
+    setUp=GuardedSampling.setUp
+    enable=GuardedSampling.enable
+    def test_candidate_observation_never_rebinds_and_ignores_other_sites(self):
+        from cloud_sync import CloudSyncService
+        self.enable()
+        logs=[]
+        sync=CloudSyncService(self.db_path,'https://example.invalid','fixture','site-test',lambda *args:logs.append(args))
+        sync.customer_id=self.room['customer_id']
+        original=self.service.configuration()
+        with patch.object(sync._identity_verifier,'observe',return_value=dict(mac=A,host='192.168.2.31',interface=14)) as observe:
+            sync._report_candidate_identities('fixture-job',[dict(host='192.168.2.31',verified=True)])
+            self.assertEqual(observe.call_count,1)
+        self.assertTrue(any(item[1]=='device_identity_candidate' for item in logs))
+        self.assertEqual(original,self.service.configuration())
+        sync.site_id='different-site'
+        with patch.object(sync._identity_verifier,'observe') as observe:
+            sync._report_candidate_identities('fixture-job',[dict(host='192.168.2.31',verified=True)])
+            observe.assert_not_called()

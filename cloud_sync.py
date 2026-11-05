@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from device_identity import IdentityVerifier
 from device_discovery import scan_modbus_networks
 from collector_diagnostics import init_queue, enqueue, prune_queue, redact, diagnostic_scope
 
@@ -66,6 +67,7 @@ class CloudSyncService:
         self.status_provider = status_provider
         self.heartbeat_interval = max(10.0, heartbeat_interval)
         self._assigned_hosts: set[str] = set()
+        self._identity_verifier = IdentityVerifier(capacity=2)
         self.discovery_scanner = discovery_scanner or (
             lambda requested_cidr, tcp_port, base_url: scan_modbus_networks(
                 requested_cidr, tcp_port, base_url,
@@ -485,6 +487,29 @@ class CloudSyncService:
             "/api/v1/edge/devices", payload, "cloud_device_created"
         )
 
+    def _report_candidate_identities(self, job_id, results):
+        """Observe up to eight existing scan candidates; never bind or move IPs."""
+        if not self.customer_id:
+            return
+        try:
+            with self.connect() as db:
+                guarded = db.execute("""SELECT 1 FROM devices d JOIN cleanrooms r ON r.id=d.cleanroom_id
+                    WHERE r.customer_id=? AND d.site_id=? AND d.enabled=1 AND d.identity_required=1 LIMIT 1""",
+                    (self.customer_id,self.site_id)).fetchone()
+            if not guarded:
+                return
+            hosts = sorted({str(item.get("host", "")) for item in results if item.get("verified") is True})[:8]
+            for host in hosts:
+                try:
+                    observation = self._identity_verifier.observe(host)
+                    self.add_log("INFO", "device_identity_candidate",
+                        json.dumps({"job_id":job_id,"observation":observation,"bound":False}))
+                except Exception as exc:
+                    self.add_log("WARNING", "device_identity_candidate_unavailable",
+                        json.dumps({"job_id":job_id,"host":host,"error_type":type(exc).__name__}))
+        except Exception as exc:
+            self.add_log("WARNING", "device_identity_inventory_unavailable", type(exc).__name__)
+
     def pull_discovery_job_once(self) -> int:
         request = urllib.request.Request(
             f"{self.base_url}/api/v1/edge/discovery/jobs",
@@ -514,6 +539,7 @@ class CloudSyncService:
                 int(job.get("tcp_port", 502)),
                 self.base_url,
             )
+            self._report_candidate_identities(job_id, results)
             completion: dict[str, object] = {
                 "status": "completed",
                 "scanned_cidr": scanned_cidrs[0] if scanned_cidrs else None,

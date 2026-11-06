@@ -146,3 +146,51 @@ class CandidateEvidence(unittest.TestCase):
         with patch.object(sync._identity_verifier,'observe') as observe:
             sync._report_candidate_identities('fixture-job',[dict(host='192.168.2.31',verified=True)])
             observe.assert_not_called()
+
+class PassiveAssignedEvidence(unittest.TestCase):
+    setUp=GuardedSampling.setUp
+    enable=GuardedSampling.enable
+    def make_sync(self):
+        from cloud_sync import CloudSyncService
+        self.logs=[]
+        sync=CloudSyncService(self.db_path,'https://example.invalid','fixture','site-test',lambda *a:self.logs.append(a))
+        sync.customer_id=self.room['customer_id']
+        return sync
+    def test_observation_preserves_bindings_and_marks_cache_unconfirmed(self):
+        self.enable();sync=self.make_sync();original=self.service.configuration()
+        snapshot={'state':'observed','neighbor':[{'State':'Stale','LinkLayerAddress':B}],'route':[]}
+        with patch('device_link_diagnostics.network_snapshot',return_value=snapshot):
+            self.assertEqual(sync.report_assigned_identity_once(),1)
+        self.assertEqual(self.service.configuration(),original)
+        evidence=[json.loads(x[2]) for x in self.logs if x[1]=='device_identity_observation']
+        self.assertEqual(len(evidence),2)
+        self.assertTrue(all(x['identity_confirmed'] is False for x in evidence))
+        self.assertEqual(evidence[0]['data'][0]['LinkLayerAddress'],B)
+    def test_site_and_customer_isolation_and_opt_out(self):
+        self.enable();sync=self.make_sync()
+        with patch('device_link_diagnostics.network_snapshot') as snapshot:
+            sync.site_id='other';self.assertEqual(sync.report_assigned_identity_once(),0)
+            sync.site_id='site-test';sync.customer_id='other';self.assertEqual(sync.report_assigned_identity_once(),0)
+            sync.customer_id=self.room['customer_id'];sync.remote_discovery_enabled=False
+            self.assertEqual(sync.report_assigned_identity_once(),0);snapshot.assert_not_called()
+    def test_unconfigured_site_does_not_start_queries(self):
+        sync=self.make_sync()
+        with patch('device_link_diagnostics.network_snapshot') as snapshot:
+            self.assertEqual(sync.report_assigned_identity_once(),0);snapshot.assert_not_called()
+    def test_concurrent_reassignment_discards_evidence(self):
+        self.enable();sync=self.make_sync()
+        def query(host):
+            with self.service.connect() as db:db.execute('UPDATE devices SET site_id=? WHERE id=?',('other',self.device['id']))
+            return {'state':'observed','neighbor':[]}
+        with patch('device_link_diagnostics.network_snapshot',side_effect=query):
+            self.assertEqual(sync.report_assigned_identity_once(),0)
+        self.assertFalse(self.logs)
+    def test_query_failure_and_stop_do_not_mutate_configuration(self):
+        self.enable();sync=self.make_sync();original=self.service.configuration()
+        with patch('device_link_diagnostics.network_snapshot',side_effect=TimeoutError):
+            self.assertEqual(sync.report_assigned_identity_once(),0)
+        self.assertEqual(self.service.configuration(),original)
+        self.assertEqual(self.logs[0][1],'device_identity_observation_unavailable')
+        sync._stop.set()
+        with patch('device_link_diagnostics.network_snapshot') as snapshot:
+            self.assertEqual(sync.report_assigned_identity_once(),0);snapshot.assert_not_called()

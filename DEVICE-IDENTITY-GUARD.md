@@ -55,3 +55,18 @@ raw retention failure, recovery, preserved history, cloud revision races,
 legacy configuration omission, tenant/site boundaries and operator audit.
 Windows CI additionally checks the native ABI and builds/executes the packaged
 collector's existing upgrade/rollback acceptance tests.
+
+## Passive evidence in 0.6.13
+
+Sites with an existing explicit identity policy also report passive Windows
+neighbor-cache and route evidence for up to eight enabled, assigned endpoints,
+every 15 minutes. A separate worker uses the existing bounded read-only Windows
+queries; it never probes new addresses, writes device registers, learns bindings,
+or delays the sampling/configuration/upload workers. Disabling remote discovery
+also disables this evidence worker. Tenant/site scope and assignment are checked
+before and after the query; evidence for a changed assignment is discarded.
+
+`device_identity_observation` explicitly marks `identity_confirmed=false` and
+`source=windows_neighbor_cache`. A stale cache entry is not proof of the current
+physical sensor, and a current MAC alone cannot establish which physical label
+belongs to that adapter. Bindings and historical readings remain unchanged.

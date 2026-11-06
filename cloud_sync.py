@@ -22,7 +22,7 @@ from device_identity import IdentityVerifier
 from device_discovery import scan_modbus_networks
 from collector_diagnostics import init_queue, enqueue, prune_queue, redact, diagnostic_scope
 
-COLLECTOR_VERSION = "0.6.12"
+COLLECTOR_VERSION = "0.6.13"
 
 
 def canonical_uuid(value: object) -> str:
@@ -486,6 +486,55 @@ class CloudSyncService:
         return self._create_topology_item_once(
             "/api/v1/edge/devices", payload, "cloud_device_created"
         )
+
+    def report_assigned_identity_once(self) -> int:
+        """Passive LAN evidence, not a binding or a hardware identity claim.
+
+        Runs in its own low-frequency worker so Windows queries cannot hold up
+        sampling, configuration, uploads or the existing discovery worker.
+        """
+        if not self.customer_id or not self.remote_discovery_enabled:
+            return 0
+        from device_link_diagnostics import network_snapshot
+        with self.connect() as db:
+            rows = db.execute("""SELECT d.id,d.host,d.expected_mac,d.identity_required
+                FROM devices d JOIN cleanrooms r ON r.id=d.cleanroom_id
+                WHERE r.customer_id=? AND d.site_id=? AND d.enabled=1 ORDER BY d.id""",
+                (self.customer_id,self.site_id)).fetchall()
+        # Existing explicit identity policy opts this site into evidence collection.
+        if not any(row[3] for row in rows):
+            return 0
+        observed = 0
+        for device_id, host, expected, required in rows[:8]:
+            if self._stop.is_set():
+                break
+            try:
+                snapshot = network_snapshot(host)
+                with self.connect() as db:
+                    current = db.execute("""SELECT d.host,d.expected_mac,d.identity_required
+                        FROM devices d JOIN cleanrooms r ON r.id=d.cleanroom_id
+                        WHERE d.id=? AND r.customer_id=? AND d.site_id=? AND d.enabled=1""",
+                        (device_id,self.customer_id,self.site_id)).fetchone()
+                if current is None or tuple(current) != (host,expected,required):
+                    continue  # Do not attach an old query to a changed assignment.
+                if self._stop.is_set():
+                    break
+                for part in ('neighbor','route'):
+                    payload = dict(device_id=device_id,host=host,expected_mac=expected,
+                        identity_required=bool(required),source='windows_neighbor_cache',
+                        identity_confirmed=False,captured_at=time.time(),part=part,
+                        state=snapshot.get('state'),data=snapshot.get(part),
+                        error_type=snapshot.get(part+'_error') or snapshot.get('error_type'))
+                    encoded = json.dumps(payload,separators=(',',':'),ensure_ascii=True)
+                    if len(encoded)>1900:
+                        payload['data']={'state':'size_limit'}
+                        encoded=json.dumps(payload,separators=(',',':'),ensure_ascii=True)
+                    self.add_log('INFO','device_identity_observation',encoded)
+                observed += 1
+            except Exception as exc:
+                self.add_log('WARNING','device_identity_observation_unavailable',
+                    json.dumps(dict(device_id=device_id,host=host,error_type=type(exc).__name__)))
+        return observed
 
     def _report_candidate_identities(self, job_id, results):
         """Observe up to eight existing scan candidates; never bind or move IPs."""
@@ -1020,6 +1069,7 @@ class CloudSyncService:
         ]
         if self.remote_discovery_enabled:
             channels.append(("discovery", self.pull_discovery_job_once, self.discovery_interval, False))
+            channels.append(("identity_evidence", self.report_assigned_identity_once, 900.0, False))
         workers = [threading.Thread(target=self._run_channel, args=args, name=f"cloud-{args[0]}", daemon=True) for args in channels]
         for worker in workers:
             worker.start()

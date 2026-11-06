@@ -55,7 +55,7 @@ def _env_enabled(name: str, default: bool = False) -> bool:
 
 @dataclass
 class MonitorOptions:
-    poll_seconds: float = _env_float("DCP_POLL_SECONDS", 10.0)
+    poll_seconds: float = _env_float("DCP_POLL_SECONDS", 30.0)
     record_seconds: float = _env_float("DCP_RECORD_SECONDS", 120.0)
     device_timeout: float = _env_float("DCP_DEVICE_TIMEOUT", 10.0)
     poll_workers: int = max(1, min(_env_int("DCP_POLL_WORKERS", 8), 32))

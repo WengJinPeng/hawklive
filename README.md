@@ -238,7 +238,12 @@ Unset `DCP_DEMO_MODE` (or set it to `0`) before installation on a real site.
 
 Runtime defaults:
 
-- Device polling and alarm evaluation: every 10 seconds.
+- Device polling and alarm evaluation: wait 30 seconds after each completed sample
+  (`DCP_POLL_SECONDS` can override this). Each TCP sample normally uses 14 sequential
+  requests with a 250 ms quiet interval after each response. Actual sample cadence
+  includes device response time; alarm detection follows this slower cadence.
+  History recording remains 120 seconds (saved at the next successful poll), and
+  recovery/alarm changes still trigger immediate persistence.
 - Up to 8 devices are polled concurrently; each completed worker can schedule its
   next device without waiting for slow peers. Failed connections are closed and
   retried once after 10 seconds. If that retry fails, recovery probes wait 60,

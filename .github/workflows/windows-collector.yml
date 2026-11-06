@@ -2,7 +2,7 @@ name: Windows collector build and update verification
 on:
   workflow_dispatch:
   push:
-    branches: [main, codex/collector-auto-update, codex/reconnect-0.6.4, codex/startup-diagnostics-0.6.5, codex/tls-roots-0.6.6, codex/network-recovery-0.6.7, codex/network-recovery-0.6.8, codex/disconnect-recovery-0.6.9, codex/link-diagnostics-0.6.10, codex/quarantine-maintenance-20261102, codex/device-identity-guard-20261106]
+    branches: [main, codex/collector-auto-update, codex/reconnect-0.6.4, codex/startup-diagnostics-0.6.5, codex/tls-roots-0.6.6, codex/network-recovery-0.6.7, codex/network-recovery-0.6.8, codex/disconnect-recovery-0.6.9, codex/link-diagnostics-0.6.10, codex/quarantine-maintenance-20261102, codex/device-identity-guard-20261106, codex/gentle-polling-20261106]
     paths-ignore:
       - 'release/**'
       - '**.md'

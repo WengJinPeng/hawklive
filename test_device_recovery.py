@@ -158,6 +158,19 @@ class DeviceRecoveryTests(unittest.TestCase):
         release.set()
 
     @patch("monitoring_service.Dcp8001TcpClient")
+    def test_slow_sample_schedules_next_poll_after_completion(self, client_type):
+        self.service.options.poll_seconds = 30
+        with patch("monitoring_service.time.monotonic", return_value=1000.0) as clock:
+            def read():
+                clock.return_value += 5.0
+                return self.sample(time.time())
+            client_type.return_value.read_realtime.side_effect = read
+            self.service._poll_device(self.room, self.device)
+            self.assertEqual(self.service._next_poll_at[self.device["id"]], 1035.0)
+            self.assertTrue(self.service.latest[self.device["id"]]["online"])
+            self.assertEqual(len(self.rows()), 1)
+
+    @patch("monitoring_service.Dcp8001TcpClient")
     def test_one_retry_then_low_frequency_probes_and_no_cooldown_bypass(self, client_type):
         client_type.return_value.read_realtime.side_effect = TimeoutError("Wi-Fi lost")
         with patch("monitoring_service.time.monotonic", return_value=1000.0) as clock:
@@ -328,13 +341,14 @@ class DeviceRecoveryTests(unittest.TestCase):
         with patch("monitoring_service.Dcp8001TcpClient", side_effect=factory):
             self.service.start()
             try:
-                self.assertTrue(first.wait(2))
+                # Fourteen requests now include 13 x 250 ms quiet gaps.
+                self.assertTrue(first.wait(6))
                 monitor_thread = self.service._thread
                 gateway.drop_link.set()
                 self.assertTrue(failed.wait(2))
                 self.assertTrue(gateway.old_socket_closed.wait(1))
                 gateway.drop_link.clear()
-                self.assertTrue(recovered.wait(3))
+                self.assertTrue(recovered.wait(7))
                 self.assertIs(self.service._thread, monitor_thread)
             finally:
                 self.service.stop()
@@ -493,7 +507,7 @@ class DeviceRecoveryTests(unittest.TestCase):
         with patch("monitoring_service.Dcp8001TcpClient", side_effect=factory):
             self.service.start()
             try:
-                self.assertTrue(recovered.wait(4), "gateway never receives enough quiet time to recover")
+                self.assertTrue(recovered.wait(8), "gateway never receives enough quiet time to recover")
                 self.assertEqual(gateway.connections, 3)
                 self.assertGreaterEqual(gateway.connection_times[2] - gateway.connection_times[1], 0.59)
                 self.service._poll_device(self.room, self.device)
@@ -506,7 +520,7 @@ class DeviceRecoveryTests(unittest.TestCase):
 
     def test_back_to_back_requests_do_not_overrun_gateway(self):
         gateway = self.start_gateway()
-        gateway.minimum_gap = 0.035
+        gateway.minimum_gap = 0.20
         with Dcp8001TcpClient("127.0.0.1", gateway.server_address[1], timeout=0.2, connect_settle=0) as client:
             for _ in range(3):
                 self.assertEqual(client.read_realtime().cleanliness_code, 7)
@@ -654,7 +668,7 @@ class DeviceRecoveryTests(unittest.TestCase):
                 self.assertIn("Socket closed while waiting for initial Modbus TCP data", self.logs[-1][2])
                 self.assertEqual(self.rows(), [])
                 gateway.reject_connections.clear()
-                self.assertTrue(recovered.wait(2))
+                self.assertTrue(recovered.wait(6))
             finally:
                 self.service.stop()
         self.assertTrue(self.service.latest[self.device["id"]]["online"])

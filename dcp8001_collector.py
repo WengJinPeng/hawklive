@@ -69,7 +69,7 @@ REQUIRED_PARTICLE_UNIT_CODE = 1
 PROTOCOL_PROFILE = "dpc8001-g-protocol-2025-06-04"
 # Leave the embedded TCP/serial bridge time to finish each exchange. This is a
 # conservative client throttle, not a manufacturer-specified TCP heartbeat.
-TCP_REQUEST_INTERVAL = 0.05
+TCP_REQUEST_INTERVAL = 0.25
 TCP_REALTIME_REQUEST_COUNT = 14
 TCP_EXCEPTION_RETRY_DELAY = 0.25
 
@@ -560,8 +560,13 @@ class Dcp8001TcpClient:
                 # This is not a firmware guarantee or a transport-error retry.
                 if exc.code not in (3, 6):
                     raise
-                if time.monotonic() + TCP_EXCEPTION_RETRY_DELAY >= self._read_deadline:
+                if time.monotonic() >= self._read_deadline:
                     raise TimeoutError("Timed out reading complete Modbus TCP sample") from exc
+                # The one compatibility retry adds intentional quiet time. Budget
+                # those waits only; do not reset or double the network I/O budget.
+                self._read_deadline += TCP_EXCEPTION_RETRY_DELAY + TCP_REALTIME_REQUEST_COUNT * getattr(
+                    self, "request_interval", TCP_REQUEST_INTERVAL,
+                )
                 self.last_read_retries = 1
                 self.last_read_retry_code = exc.code
                 self.last_read_retry_register = self.request_register

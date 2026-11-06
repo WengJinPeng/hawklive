@@ -33,7 +33,7 @@ from collector_settings import (
     save_settings,
     validate_settings,
 )
-from dcp8001_collector import Dcp8001TcpClient
+from dcp8001_collector import Dcp8001TcpClient, TCP_REQUEST_INTERVAL
 from collector_diagnostics import init_queue, enqueue, redact, log_scope, LOCAL_LOG_LIMIT, LOCAL_LOG_SECONDS
 from device_discovery import (
     local_private_networks,
@@ -118,6 +118,7 @@ def collector_runtime_snapshot() -> dict[str, object]:
         "update_status": read_json(RUNTIME_PATHS.data_dir / "collector-update-status.json") if os.environ.get("DCP_SUPERVISOR_NONCE") else {"enabled": False, "state": "manual_upgrade_required"},
         "monitor_running": running,
         "poll_seconds": MONITOR.options.poll_seconds if MONITOR else None,
+        "request_interval_seconds": TCP_REQUEST_INTERVAL,
         "record_seconds": MONITOR.options.record_seconds if MONITOR else None,
         **connection,
         **(MONITOR.network_recovery_status(devices) if MONITOR and running else {"network_state": "unknown", "network_next_retry_seconds": None}),

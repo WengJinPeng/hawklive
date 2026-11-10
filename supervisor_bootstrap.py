@@ -319,7 +319,13 @@ def run_installed():
     backend=WindowsBackend(root,data)
     try:
         backend.preflight()
-        return Migration(root,data,backend).run()
+        result = Migration(root,data,backend).run()
+        if result in TERMINAL:
+            try:
+                backend.command(['schtasks.exe','/Change','/TN',backend.TASK,'/Disable'])
+            except Exception:
+                pass  # A cleanup failure must not reverse a committed migration.
+        return result
     except Exception as error:
         atomic_json(root/'bootstrap-last-error.json', {'type':type(error).__name__, 'message':str(error)[:500], 'at':time.time()})
         raise

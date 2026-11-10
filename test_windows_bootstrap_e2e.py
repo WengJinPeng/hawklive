@@ -118,8 +118,8 @@ class WindowsBootstrapTests(unittest.TestCase):
         save_settings(self.data/'collector_settings.json',CollectorSettings(f'https://127.0.0.1:{self.server.server_port}','bootstrap-site','isolated-bootstrap-token'))
         self.settings=(self.data/'collector_settings.json').read_bytes()
         wi.install_elevated(old,None)
-        self.wait(lambda:(self.data/'collector.sqlite3').exists(),60)
-        with closing(sqlite3.connect(self.data/'collector.sqlite3')) as db,db:
+        self.wait(lambda:(self.data/'dashboard_data.sqlite3').exists(),60)
+        with closing(sqlite3.connect(self.data/'dashboard_data.sqlite3')) as db,db:
             db.execute("CREATE TABLE bootstrap_preserved_evidence(value TEXT)")
             db.execute("INSERT INTO bootstrap_preserved_evidence VALUES('before update')")
     def wait(self,predicate,seconds):
@@ -131,11 +131,11 @@ class WindowsBootstrapTests(unittest.TestCase):
         raise AssertionError('Timed out; bootstrap='+str(status.get('phase'))+' error='+str(read_json(self.root/'bootstrap-last-error.json'))+' update='+str(read_json(self.data/'collector-update-status.json')))
     def preserved(self):
         self.assertEqual((self.data/'collector_settings.json').read_bytes(),self.settings)
-        with closing(sqlite3.connect(self.data/'collector.sqlite3')) as db:
+        with closing(sqlite3.connect(self.data/'dashboard_data.sqlite3')) as db:
             self.assertEqual(db.execute('SELECT value FROM bootstrap_preserved_evidence ORDER BY rowid').fetchall(),[('before update',),('during migration',)])
     def test_a_interrupted_independent_task_recovers_without_cloud(self):
         self.wait(lambda:read_json(self.root/b.STATE).get('phase')=='trial',240)
-        with closing(sqlite3.connect(self.data/'collector.sqlite3')) as db,db:db.execute("INSERT INTO bootstrap_preserved_evidence VALUES('during migration')")
+        with closing(sqlite3.connect(self.data/'dashboard_data.sqlite3')) as db,db:db.execute("INSERT INTO bootstrap_preserved_evidence VALUES('during migration')")
         wi.run_checked(['schtasks.exe','/End','/TN',b.WindowsBackend.TASK])
         self.server.shutdown();self.server.server_close();self.thread.join(5);self.server=None
         # The minute trigger resumes a persisted interrupted trial without the cloud.
@@ -143,7 +143,7 @@ class WindowsBootstrapTests(unittest.TestCase):
         self.assertEqual(b.digest(self.root/b.SUPERVISOR),b.digest(self.binaries[0]));self.preserved()
     def test_b_full_business_trial_commits_without_interactive_install(self):
         self.wait(lambda:read_json(self.root/b.STATE).get('phase')=='trial',240)
-        with closing(sqlite3.connect(self.data/'collector.sqlite3')) as db,db:db.execute("INSERT INTO bootstrap_preserved_evidence VALUES('during migration')")
+        with closing(sqlite3.connect(self.data/'dashboard_data.sqlite3')) as db,db:db.execute("INSERT INTO bootstrap_preserved_evidence VALUES('during migration')")
         started=time.monotonic()
         self.wait(lambda:read_json(self.root/b.STATE).get('phase')=='committed',750)
         self.assertGreater(time.monotonic()-started,590)

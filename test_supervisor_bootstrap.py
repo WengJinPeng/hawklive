@@ -104,6 +104,29 @@ class BootstrapTests(unittest.TestCase):
                 (self.root/b.HELPER).unlink()
                 (self.root/'bootstrap-previous.exe').unlink()
 
+    def test_staging_failure_cleans_only_owned_material_and_can_retry(self):
+        copy=b.durable_copy
+        def fail(source,destination,expected):
+            if destination.name==b.HELPER:raise OSError('disk staging failure')
+            return copy(source,destination,expected)
+        with patch.object(b,'durable_copy',side_effect=fail):
+            with self.assertRaises(OSError):self.m.prepare(self.envelope())
+        self.assertFalse((self.root/'bootstrap-previous.exe').exists())
+        self.assertFalse(self.m.path.exists())
+        self.assertEqual(self.backend.stops,0)
+        self.m.prepare(self.envelope())
+        self.assertTrue(self.backend.registered)
+        self.assert_data()
+
+    def test_busy_file_replacement_has_bounded_retries(self):
+        replace=b.os.replace
+        with patch.object(b.os,'replace',side_effect=[PermissionError(),PermissionError(),None]) as action, patch.object(b.time,'sleep'):
+            b.retry_busy(lambda:action('a','b'))
+            self.assertEqual(action.call_count,3)
+        with patch.object(b.time,'sleep'), patch.object(b.os,'replace',side_effect=PermissionError()) as action:
+            with self.assertRaises(PermissionError):b.retry_busy(lambda:action('a','b'))
+            self.assertEqual(action.call_count,5)
+
     def test_legacy_pending_transaction_prevents_preparation(self):
         atomic_json(self.root/'collector-update-transaction.json',{'target':'0.6.15'})
         with self.assertRaises(ValueError):self.m.prepare(self.envelope())

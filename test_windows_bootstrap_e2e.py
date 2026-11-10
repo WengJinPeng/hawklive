@@ -145,6 +145,10 @@ class WindowsBootstrapTests(unittest.TestCase):
         self.wait(lambda:read_json(self.root/b.STATE).get('phase')=='trial',240)
         with closing(sqlite3.connect(self.data/'dashboard_data.sqlite3')) as db,db:db.execute("INSERT INTO bootstrap_preserved_evidence VALUES('during migration')")
         started=time.monotonic()
+        backend=b.WindowsBackend(self.root,self.data)
+        nonce=backend.health()['supervisor_nonce']
+        backend.start()  # Native schtasks /Run on an already running IgnoreNew task.
+        self.assertEqual(backend.health()['supervisor_nonce'],nonce)
         self.wait(lambda:read_json(self.root/b.STATE).get('phase')=='committed',750)
         self.assertGreater(time.monotonic()-started,590)
         self.assertEqual(b.digest(self.root/b.SUPERVISOR),b.digest(self.bridge));self.preserved()

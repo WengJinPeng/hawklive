@@ -57,6 +57,16 @@ def verify_plan(envelope, *, scope=None, keys=None, fresh=True):
     return p
 
 
+def retry_busy(action):
+    for attempt in range(5):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(.2 * (attempt + 1))
+
+
 def durable_copy(source, destination, expected):
     if digest(source) != expected:
         raise ValueError('Source digest mismatch')
@@ -66,7 +76,7 @@ def durable_copy(source, destination, expected):
         os.fsync(stream.fileno())
     if digest(temporary) != expected:
         raise ValueError('Staged digest mismatch')
-    os.replace(temporary, destination)
+    retry_busy(lambda: os.replace(temporary, destination))
 
 
 class Migration:
@@ -77,7 +87,7 @@ class Migration:
 
     def save(self, record, phase):
         record['phase'] = phase
-        atomic_json(self.path, record)
+        retry_busy(lambda: atomic_json(self.path, record))
 
     def prepare(self, envelope):
         with SingleInstanceLock(self.root/'bootstrap.lock'):
@@ -98,12 +108,22 @@ class Migration:
             if p['target_sha256'] != p['worker_sha256']:
                 raise ValueError('Candidate must be the committed bridge')
             backup = self.root/'bootstrap-previous.exe'
-            if backup.exists() or (self.root/HELPER).exists():
+            owned = (backup, self.root/HELPER, Path(str(backup)+'.new'),
+                     Path(str(self.root/HELPER)+'.new'), self.path.with_suffix('.json.tmp'))
+            if any(path.exists() for path in owned):
                 raise ValueError('Unowned bootstrap files already exist')
-            durable_copy(self.root/SUPERVISOR, backup, p['previous_sha256'])
-            durable_copy(self.root/WORKER, self.root/HELPER, p['target_sha256'])
-            record = {'envelope':envelope, 'phase':'prepared', 'version':installed['version']}
-            self.save(record, 'prepared')
+            try:
+                durable_copy(self.root/SUPERVISOR, backup, p['previous_sha256'])
+                durable_copy(self.root/WORKER, self.root/HELPER, p['target_sha256'])
+                record = {'envelope':envelope, 'phase':'prepared', 'version':installed['version']}
+                self.save(record, 'prepared')
+            except Exception:
+                # No recovery task exists yet. Remove only material this call
+                # created, so a transient staging error does not burn the chance.
+                if not self.path.exists():
+                    for path in owned:
+                        retry_busy(lambda path=path: path.unlink(missing_ok=True))
+                raise
             # Register persistent boot/repetition recovery before touching main task.
             self.backend.register_recovery(self.root/HELPER)
             self.backend.verify_recovery(self.root/HELPER)

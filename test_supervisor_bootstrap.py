@@ -86,6 +86,30 @@ class BootstrapTests(unittest.TestCase):
         atomic_json(self.root/'collector-update-transaction.json',{'target':'0.6.15'})
         with self.assertRaises(ValueError):self.m.prepare(self.envelope())
         self.assertFalse(self.backend.registered)
+    def test_legacy_update_racing_stop_never_switches_supervisor(self):
+        self.m.prepare(self.envelope())
+        stop = self.backend.stop_and_wait
+        def concurrent_update():
+            stop()
+            atomic_json(self.root/'collector-update-transaction.json', {'target':'0.6.16'})
+        with patch.object(self.backend, 'stop_and_wait', side_effect=concurrent_update), patch.object(self.backend, 'trial') as trial:
+            self.assertEqual(self.m.run(), 'rolled_back')
+            trial.assert_not_called()
+        self.assertEqual(b.digest(self.root/b.SUPERVISOR), self.plan['previous_sha256'])
+        self.assert_data()
+
+    def test_low_space_blocks_new_migration_but_not_recovery(self):
+        from types import SimpleNamespace
+        backend = b.WindowsBackend(self.root, self.data)
+        with patch.object(b.shutil, 'disk_usage', return_value=SimpleNamespace(free=1)):
+            with self.assertRaises(OSError):backend.check_space()
+            for phase in ('prepared', 'armed'):
+                atomic_json(self.m.path, {'phase':phase})
+                with self.assertRaises(OSError):backend.check_space()
+            for phase in ('stopping', 'stopped', 'switching', 'trial', 'rolling_back', 'committed', 'rolled_back'):
+                atomic_json(self.m.path, {'phase':phase})
+                backend.check_space()
+
     def test_damaged_backup_does_not_stop_running_process(self):
         self.m.prepare(self.envelope());r=b.read_json(self.m.path);self.m.save(r,'trial')
         (self.root/'bootstrap-previous.exe').write_bytes(b'bad')

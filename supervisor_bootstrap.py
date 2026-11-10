@@ -137,6 +137,11 @@ class Migration:
                 try:
                     self.backend.stop_and_wait()
                     self.save(r, 'stopped')
+                    # The legacy supervisor cannot honor our migration lock. Recheck
+                    # after it exits so a concurrent worker update cannot be hidden.
+                    if ((self.root/'collector-update-transaction.json').exists()
+                            or digest(self.root/WORKER) != p['worker_sha256']):
+                        raise ValueError('Legacy update raced with migration')
                     self.save(r, 'switching')
                     durable_copy(self.root/HELPER, self.root/SUPERVISOR, p['target_sha256'])
                     self.save(r, 'trial')
@@ -201,10 +206,17 @@ class WindowsBackend:
         if '"S-1-5-18"' not in user:
             raise PermissionError('SYSTEM required; no elevation prompt allowed')
         self.check_task(TASK_NAME, self.root/SUPERVISOR, scheduled_task_arguments(self.data))
-        if shutil.disk_usage(self.root).free < (self.root/WORKER).stat().st_size*4+100*1024*1024:
-            raise OSError('Insufficient recovery space')
+        self.check_space()
         if any(p.is_symlink() for p in (self.root,self.data,self.root/SUPERVISOR,self.root/WORKER)):
             raise ValueError('Unexpected symbolic link')
+
+    def check_space(self):
+        # Reserve space before disruption, but do not prevent crash recovery
+        # merely because free space fell below the preparation reserve. Recovery
+        # still verifies the backup and uses an atomic, checked copy.
+        phase = read_json(self.root/STATE).get('phase') if (self.root/STATE).exists() else None
+        if phase in (None, 'prepared', 'armed') and shutil.disk_usage(self.root).free < (self.root/WORKER).stat().st_size*4+100*1024*1024:
+            raise OSError('Insufficient recovery space')
 
     def health(self):
         import urllib.request

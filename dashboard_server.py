@@ -763,10 +763,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "data": {
                     "version": COLLECTOR_VERSION,
                     "sleep_prevention": POWER_GUARD.status() if POWER_GUARD else {"state": "inactive", "system_required": False},
-                    "supervisor_nonce": os.environ.get("DCP_SUPERVISOR_NONCE"),
+                    "supervisor_nonce": os.environ.get("DCP_SUPERVISOR_NONCE") if self.client_address[0] in ('127.0.0.1','::1','::ffff:127.0.0.1') else None,
                     "monitor_running": monitor_running,
                     "storage_state": storage.get("state"),
                     "database_integrity": storage.get("integrity"),
+                    "health_contract": 1,
+                    "scheduler": MONITOR.scheduler_health() if MONITOR else {},
+                    "update_scope": {'customer_id': CLOUD_SYNC.customer_id,
+                                     'site_id': CLOUD_SYNC.site_id,
+                                     'instance_id': CLOUD_SYNC.instance_id} if CLOUD_SYNC and self.client_address[0] in ('127.0.0.1','::1','::ffff:127.0.0.1') else {},
                 },
             }, HTTPStatus.OK if monitor_running and storage.get("state") != "critical" else HTTPStatus.SERVICE_UNAVAILABLE)
             return

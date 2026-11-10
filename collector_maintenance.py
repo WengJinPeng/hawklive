@@ -13,6 +13,7 @@ from uuid import UUID
 
 from collector_diagnostics import redact
 import maintenance_protocol as protocol
+import maintenance_index
 
 
 class CollectorMaintenance:
@@ -55,6 +56,16 @@ class CollectorMaintenance:
 
     def snapshot(self):
         with self.connection() as db:
+            db.execute('BEGIN')
+            source_table = maintenance_index.table(db)
+            def query(sql, params):
+                try:
+                    return db.execute(sql, params)
+                except sqlite3.OperationalError:
+                    if source_table == 'readings':
+                        raise
+                    # Same read transaction and progress-handler deadline.
+                    return db.execute(sql.replace(source_table, 'readings'), params)
             columns = {row[1] for row in db.execute('PRAGMA table_info(readings)')}
             if 'sync_quarantined_at' not in columns: return {'items': [], 'complete': False, 'total': 0}
             fields = []
@@ -63,13 +74,13 @@ class CollectorMaintenance:
                 elif key in ('particles_json', 'environment_json', 'alarm_details_json'):
                     fields.append(f'substr({key},1,{protocol.MAX_RAW_BYTES + 1}) AS {key}')
                 else: fields.append(key)
-            count = db.execute("SELECT COUNT(*) FROM readings WHERE customer_id=? AND site_id=? AND source='device' AND sync_quarantined_at IS NOT NULL", (self.service.customer_id, self.service.site_id)).fetchone()[0]
+            count = query(f"SELECT COUNT(*) FROM {source_table} WHERE customer_id=? AND site_id=? AND source='device' AND sync_quarantined_at IS NOT NULL", (self.service.customer_id, self.service.site_id)).fetchone()[0]
             if count <= protocol.MAX_REPORT_ITEMS: self.snapshot_cursor = None
             params = [self.service.customer_id,self.service.site_id]
             cursor_clause = ''
             if self.snapshot_cursor is not None:
                 cursor_clause = ' AND record_uuid>?';params.append(self.snapshot_cursor)
-            rows = db.execute('SELECT ' + ','.join(fields) + ",sync_attempts,sync_error,sync_quarantined_at,synced_at FROM readings WHERE customer_id=? AND site_id=? AND source='device' AND sync_quarantined_at IS NOT NULL" + cursor_clause + ' ORDER BY record_uuid LIMIT ?', (*params,protocol.MAX_REPORT_ITEMS + 1)).fetchall()
+            rows = query('SELECT ' + ','.join(fields) + f",sync_attempts,sync_error,sync_quarantined_at,synced_at FROM {source_table} WHERE customer_id=? AND site_id=? AND source='device' AND sync_quarantined_at IS NOT NULL" + cursor_clause + ' ORDER BY record_uuid LIMIT ?', (*params,protocol.MAX_REPORT_ITEMS + 1)).fetchall()
             self.snapshot_cursor = str(rows[protocol.MAX_REPORT_ITEMS - 1]['record_uuid']) if len(rows) > protocol.MAX_REPORT_ITEMS else None
             rows = rows[:protocol.MAX_REPORT_ITEMS]
         items = []
@@ -134,6 +145,11 @@ class CollectorMaintenance:
     def once(self):
         if not self.service.customer_id or time.monotonic() < self.unavailable_until: return 0
         try:
+            if maintenance_index.enabled(self.service):
+                try:
+                    maintenance_index.ensure(self.service.db_path)
+                except (OSError, ValueError, sqlite3.Error):
+                    pass  # Optional optimization cannot disable maintenance reporting.
             if time.monotonic() - self.last_report >= 30 or not self.last_report:
                 cursor = self.snapshot_cursor
                 try: self.request('/api/v1/edge/quarantine/snapshot', self.snapshot())

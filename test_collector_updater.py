@@ -18,10 +18,11 @@ import update_protocol as protocol
 import collector_update_api as api
 
 
-def signed_release(version='0.6.1', content=b'MZ-new-collector'):
+def signed_release(version='0.6.1', content=b'MZ-new-collector', *, scoped=False):
     key=Ed25519PrivateKey.generate()
     public=key.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw).hex()
     payload=dict(version=version,platform='windows-x64',protocol=1,size=len(content),sha256=hashlib.sha256(content).hexdigest(),issued_at=int(time.time()),expires_at=int(time.time())+86400)
+    if scoped: payload.update(protocol=2,scope={'customer_id':'qa','site_id':'qa-site','instance_id':'qa-instance'}, health_contract=1)
     envelope=dict(release=payload,key_id='qa',signature=base64.b64encode(key.sign(protocol.canonical(payload))).decode())
     return envelope, {'qa':public}
 
@@ -36,7 +37,7 @@ class UpdaterTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.exe=self.root/updater.EXE_NAME;self.exe.write_bytes(b'MZ-known-good')
         self.content=b'MZ-new-collector'
-        self.envelope,self.keys=signed_release(content=self.content)
+        self.envelope,self.keys=signed_release(content=self.content, scoped=True)
         self.release=self.envelope['release']
 
     def tearDown(self): self.temp.cleanup()
@@ -103,13 +104,14 @@ class UpdaterTests(unittest.TestCase):
         supervisor.start_worker=Mock()
         supervisor.stop_worker=Mock(return_value=True)
         supervisor.child=Mock()
+        supervisor.health=Mock(return_value={'update_scope':self.release['scope']})
         return supervisor
 
     def run_check(self, supervisor, envelope=None):
         envelope=envelope or self.envelope
-        opener=Mock();opener.open.return_value=Response(json.dumps(envelope).encode(),'https://example.test/api/v1/collector-updates/stable')
+        opener=Mock();opener.open.return_value=Response(json.dumps(envelope).encode(),'https://example.test/api/v1/collector-updates/scoped/stable')
         def download(origin,release,path):path.write_bytes(self.content)
-        with patch.object(updater,'load_settings',return_value=SimpleNamespace(configured=True,cloud_url='https://example.test')),patch.object(updater,'update_opener',return_value=opener),patch.object(updater,'download_release',side_effect=download),patch.dict(protocol.TRUSTED_KEYS,self.keys):
+        with patch.object(updater,'load_settings',return_value=SimpleNamespace(configured=True,cloud_url='https://example.test',site_id='qa-site',token='qa-token')),patch.object(updater,'update_opener',return_value=opener),patch.object(updater,'download_release',side_effect=download),patch.dict(protocol.TRUSTED_KEYS,self.keys):
             supervisor.check_update()
 
     def test_failed_trial_rolls_back_and_does_not_retry_same_bad_release(self):
@@ -140,7 +142,7 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(supervisor.status['state'],'failed')
 
     def test_health_rejects_other_instance_even_if_port_responds(self):
-        supervisor=self.supervisor();supervisor.nonce='mine';supervisor.child.poll.return_value=None
+        supervisor=self.supervisor();del supervisor.health;supervisor.nonce='mine';supervisor.child.poll.return_value=None
         supervisor.local_http=Mock()
         for nonce,expected in [('other',False),('mine',True)]:
             supervisor.local_http.open.return_value=Response(json.dumps({'ok':True,'data':{'version':'0.6.1','supervisor_nonce':nonce}}).encode(),'')
@@ -149,6 +151,8 @@ class UpdaterTests(unittest.TestCase):
     def test_distribution_serves_only_verified_manifest_and_digest_named_artifact(self):
         from fastapi import FastAPI
         app=FastAPI();api.register_update_routes(app)
+        self.envelope,self.keys=signed_release(content=self.content)
+        self.release=self.envelope['release']
         with patch.object(api,'release_directory',return_value=self.root),patch.dict(protocol.TRUSTED_KEYS,self.keys),TestClient(app) as http:
             self.assertEqual(http.get('/api/v1/collector-updates/stable').json(),{'available':False})
             artifact=self.root/(self.release['sha256']+'.exe')

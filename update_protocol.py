@@ -15,6 +15,15 @@ UPDATER_PROTOCOL = 1
 TRUSTED_KEYS: dict[str, str] = {"hawkhive-2026": "aea7211db2cb5f8d5571351c36a8c6896bca7aff499db0173e28576d4ff0746c"}
 
 
+def verify_scope(payload: dict, scope: dict) -> None:
+    """Scope is signed metadata, never inferred from IP or user agent."""
+    fields = ('customer_id', 'site_id', 'instance_id')
+    if (any(not isinstance(scope.get(key), str) or not scope[key] for key in fields)
+            or payload.get('scope') != {key: scope[key] for key in fields}
+            or payload.get('health_contract') != 1 or payload.get('protocol') != 2):
+        raise ValueError('Release scope or business health contract does not match')
+
+
 def version_tuple(version: str) -> tuple[int, int, int]:
     if not isinstance(version, str) or not re.fullmatch(r'(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})', version):
         raise ValueError('Invalid collector version')
@@ -34,7 +43,7 @@ def verify_manifest(envelope: dict, *, keys=None, now=None) -> dict:
     Ed25519PublicKey.from_public_bytes(bytes.fromhex(key)).verify(
         base64.b64decode(envelope['signature'], validate=True), canonical(payload))
     version_tuple(payload['version'])
-    if payload['platform'] != 'windows-x64' or payload['protocol'] != UPDATER_PROTOCOL:
+    if payload['platform'] != 'windows-x64' or payload['protocol'] not in (UPDATER_PROTOCOL, 2):
         raise ValueError('Unsupported updater platform or protocol')
     if type(payload['size']) is not int or not 2 <= payload['size'] <= MAX_EXE_BYTES:
         raise ValueError('Invalid release size')

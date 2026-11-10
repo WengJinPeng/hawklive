@@ -110,6 +110,21 @@ class MonitoringService:
         self._link_diagnostics = DeviceLinkDiagnostics(self._log_diagnostic)
         self._identity_verifier = IdentityVerifier()
         self._configuration_gate = threading.RLock()
+        from passive_incident import PassiveIncident
+        self._passive_incident = PassiveIncident(self.db_path.parent)
+        self._scheduler_tick = 0
+        self._scheduler_at = None
+        self._oldest_attempt_at = None
+        self._internal_failures = 0
+
+    def scheduler_health(self):
+        # Independent of network success: offline devices still complete attempts.
+        at = self._scheduler_at
+        attempt_at = self._oldest_attempt_at
+        return {'tick': self._scheduler_tick,
+                'internal_failures': self._internal_failures,
+                'age_seconds': None if at is None else max(0, time.monotonic() - at),
+                'oldest_attempt_seconds': max(0, time.monotonic() - attempt_at) if attempt_at is not None else 0}
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -1033,6 +1048,9 @@ class MonitoringService:
         self._stop.clear()
         if self._link_diagnostics.closed.is_set():
             self._link_diagnostics = DeviceLinkDiagnostics(self._log_diagnostic)
+        if self._passive_incident.closed.is_set():
+            from passive_incident import PassiveIncident
+            self._passive_incident = PassiveIncident(self.db_path.parent)
         self._thread = threading.Thread(target=self._run, name="dcp-monitor", daemon=True)
         self._thread.start()
         mode = "demo" if self.options.demo else "device"
@@ -1041,6 +1059,7 @@ class MonitoringService:
     def stop(self) -> None:
         self._stop.set()
         self._link_diagnostics.close()
+        self._passive_incident.close()
         with self._client_lock:
             clients = [client for _endpoint, client in self._device_clients.values()]
         for client in clients:
@@ -1149,10 +1168,12 @@ class MonitoringService:
         workers = max(1, min(self.options.poll_workers, 32))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="dcp-device") as executor:
             in_flight = {}
+            started = {}
             while not self._stop.is_set():
                 for future in list(in_flight):
                     if future.done():
                         in_flight.pop(future)
+                        started.pop(future, None)
                         try:
                             future.result()
                         except Exception as exc:
@@ -1169,6 +1190,7 @@ class MonitoringService:
                     self._stop.wait(1.0)
                     continue
                 active_ids = {str(device["id"]) for _room, device in configured}
+                self._passive_incident.configure(configured)
                 busy_ids = set(in_flight.values())
                 self._watch_network(configured,busy_ids)
                 endpoints = {
@@ -1205,6 +1227,10 @@ class MonitoringService:
                 for _at, _index, room, device in due:
                     future = executor.submit(self._poll_device, room, device)
                     in_flight[future] = str(device["id"])
+                    started[future] = time.monotonic()
+                self._oldest_attempt_at = min(started.values(), default=None)
+                self._scheduler_tick += 1
+                self._scheduler_at = time.monotonic()
                 # A slow peer must not hold the next poll of a healthy peer.
                 next_due = scheduled[0][0] if scheduled and not due else now + 1.0
                 pause = max(0.1, min(1.0, next_due - time.monotonic()))
@@ -1214,6 +1240,9 @@ class MonitoringService:
                     self._stop.wait(pause)
 
     def _log_diagnostic(self, level: str, event: str, message: str) -> None:
+        if event in ('monitor_worker_failed', 'device_sample_save_failed', 'device_sample_processing_failed', 'device_read_internal_error'):
+            with self._lock:
+                self._internal_failures += 1
         try:
             self.add_log(level, event, message)
         except Exception:
@@ -1315,6 +1344,8 @@ class MonitoringService:
                         raise
                 source = "device"
         except Exception as exc:
+            if not isinstance(exc, (OSError, ValueError, IdentityError)):
+                self._log_diagnostic('ERROR', 'device_read_internal_error', type(exc).__name__)
             if not self._stop.is_set():
                 if isinstance(exc, IdentityError):
                     self._log_diagnostic("ERROR", "device_identity_blocked",
@@ -1451,6 +1482,7 @@ class MonitoringService:
                             errno=getattr(exc, 'errno', None), winerror=getattr(exc, 'winerror', None),
                             failure_count=failure_count, retry_seconds=delay)
             self._link_diagnostics.submit(room.get('customer_id'), device.get('site_id'), device, evidence)
+            self._passive_incident.submit(room.get('customer_id'), device.get('site_id'), device, evidence)
         except Exception:
             pass  # Optional evidence must not affect the normal failure path.
         # Save the last actually received sample at its original timestamp.

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import math
+import hashlib
 import os
 import secrets
 import shutil
@@ -15,13 +17,29 @@ from cloud_tls import cloud_ssl_context
 from collector_startup import record_startup
 from collector_settings import load_settings
 from single_instance import SingleInstanceLock
-from update_protocol import (MAX_EXE_BYTES, atomic_json, read_json, secure_origin,
-                             verify_executable, verify_manifest, version_tuple)
+from update_protocol import (MAX_EXE_BYTES, atomic_json as _atomic_json, read_json, secure_origin,
+                             verify_executable, verify_manifest, verify_scope, version_tuple)
 
 CHECK_SECONDS = 3600
 HEALTH_TIMEOUT = 120
 HEALTH_STABLE_SECONDS = 30
+PROBATION_SECONDS = 600
 EXE_NAME = 'HawkHive-DPC8001-Collector.exe'
+
+
+def retry_file_operation(operation, *args):
+    for attempt in range(3):
+        try:
+            return operation(*args)
+        except PermissionError:
+            if attempt == 2:
+                raise
+            time.sleep(.2)
+
+
+def atomic_json(path, payload):
+    return retry_file_operation(_atomic_json, path, payload)
+
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -74,10 +92,12 @@ class UpdateTransaction:
         shutil.copy2(self.exe, self.previous)
         with self.previous.open("r+b") as stream:
             os.fsync(stream.fileno())
-        atomic_json(self.journal, {'target': release['version'], 'previous_version': previous_version})
+        atomic_json(self.journal, {'target': release['version'], 'previous_version': previous_version,
+                                  'target_sha256': release['sha256'],
+                                  'previous_sha256': hashlib.sha256(self.previous.read_bytes()).hexdigest()})
         # An interrupted transaction (even before this rename) restores the known
         # previous executable on the next boot, before any new worker is started.
-        os.replace(self.staged, self.exe)
+        retry_file_operation(os.replace, self.staged, self.exe)
 
     def commit(self, version: str) -> None:
         atomic_json(self.installed, {'version': version})
@@ -87,13 +107,21 @@ class UpdateTransaction:
         if not self.journal.exists():
             return {}
         transaction = read_json(self.journal)
+        if not transaction.get('target') or not transaction.get('previous_version'):
+            raise RuntimeError('Update journal is unreadable; refusing to start an uncommitted binary')
+        if transaction.get('previous_sha256') and self.exe.is_file() and hashlib.sha256(self.exe.read_bytes()).hexdigest() == transaction['previous_sha256']:
+            atomic_json(self.installed, {'version': transaction['previous_version']})
+            self.journal.unlink()
+            return transaction  # Switch never happened, or recovery already completed.
         if not self.previous.is_file():
             raise RuntimeError('Interrupted update has no rollback executable')
+        if transaction.get('previous_sha256') and hashlib.sha256(self.previous.read_bytes()).hexdigest() != transaction['previous_sha256']:
+            raise RuntimeError('Rollback executable checksum mismatch')
         # Copy then rename preserves rollback if the machine loses power again.
         shutil.copy2(self.previous, self.staged)
         with self.staged.open("r+b") as stream:
             os.fsync(stream.fileno())
-        os.replace(self.staged, self.exe)
+        retry_file_operation(os.replace, self.staged, self.exe)
         atomic_json(self.installed, {'version': transaction.get('previous_version')})
         self.journal.unlink()
         return transaction
@@ -166,7 +194,12 @@ class Supervisor:
         self.nonce = ''
         self.current = read_json(self.transaction.installed).get('version')
         self.status = read_json(self.status_path)
+        self.update_state_readable = not self.status_path.exists() or bool(self.status)
+        if not self.update_state_readable:
+            self.status = {'updates_disabled': True, 'error': 'Update status is unreadable; automatic installation disabled'}
+        self.update_state_readable = self.update_state_readable and not self.status.get('updates_disabled', False)
         self.blocked_version = self.status.get('blocked_version')
+        self.blocked_sha256 = self.status.get('blocked_sha256')
         self.local_http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def report(self, state: str, **values):
@@ -177,6 +210,8 @@ class Supervisor:
         self.nonce = secrets.token_hex(24)
         self.stop_path.unlink(missing_ok=True)
         env = {**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT':'1', 'DCP_SUPERVISOR_NONCE':self.nonce}
+        env['DCP_UPDATE_TRIAL'] = '1' if self.transaction.journal.exists() else '0'
+        env['DCP_UPDATE_JOURNAL'] = str(self.transaction.journal.resolve())
         from collector_activation import ACTIVATION_FILENAME
         from collector_enrollment import ENROLLMENT_FILENAME
         command = [str(self.transaction.exe),'--device','--no-browser','--managed-worker',
@@ -210,22 +245,66 @@ class Supervisor:
             return True
         except subprocess.TimeoutExpired:
             if force:
-                subprocess.run(['taskkill.exe','/PID',str(self.child.pid),'/T','/F'],capture_output=True,check=False)
+                subprocess.run(['taskkill.exe','/PID',str(self.child.pid),'/T','/F'],capture_output=True,check=False,timeout=15)
                 self.child.wait(timeout=30)
                 return True
             self.stop_path.unlink(missing_ok=True)
             return False
 
-    def healthy_trial(self, expected: str) -> bool:
-        deadline = time.monotonic() + HEALTH_TIMEOUT
+    def healthy_trial(self, expected: str, *, business=False, scope=None) -> bool:
+        stable_seconds = PROBATION_SECONDS if business else HEALTH_STABLE_SECONDS
+        deadline = time.monotonic() + HEALTH_TIMEOUT + (stable_seconds if business else 0)
         healthy_since = None
+        last_tick = None
+        last_progress = time.monotonic()
+        last_check = last_progress
+        startup_deadline = last_progress + HEALTH_TIMEOUT
+        invalid_since = None
         while time.monotonic() < deadline:
             if self.child.poll() is not None:
                 return False
             data = self.health()
-            if data.get('version') == expected:
-                healthy_since = healthy_since or time.monotonic()
-                if time.monotonic() - healthy_since >= HEALTH_STABLE_SECONDS:
+            now = time.monotonic()
+            if business and now - last_check > 10:
+                # Host suspend is not evidence against the new executable.
+                healthy_since = None
+                last_progress = now
+                deadline = now + HEALTH_TIMEOUT + stable_seconds
+                startup_deadline = now + HEALTH_TIMEOUT
+            last_check = now
+            valid = data.get('version') == expected
+            if healthy_since is None and now > startup_deadline:
+                return False
+            if business:
+                tick = data.get('scheduler', {}).get('tick')
+                age = data.get('scheduler', {}).get('age_seconds')
+                attempt_age = data.get('scheduler', {}).get('oldest_attempt_seconds')
+                valid = (valid and data.get('health_contract') == 1
+                         and (scope is None or data.get('update_scope') == scope)
+                         and data.get('monitor_running') is True
+                         and data.get('scheduler', {}).get('internal_failures') == 0
+                         and data.get('storage_state') not in (None, 'critical', 'not_ready')
+                         and type(tick) is int and tick > 0
+                         and type(attempt_age) in (float, int) and math.isfinite(attempt_age) and 0 <= attempt_age < 180
+                         and type(age) in (float, int) and math.isfinite(age) and 0 <= age < 30)
+                if valid and (last_tick is None or tick > last_tick):
+                    last_tick, last_progress = tick, now
+                elif last_tick is not None and (tick != last_tick or now - last_progress >= 30):
+                    valid = False
+                if healthy_since is not None and not valid:
+                    if invalid_since is None:
+                        invalid_since = now
+                    if now - invalid_since >= 30:
+                        return False
+                    time.sleep(2)
+                    continue
+                invalid_since = None
+            if valid:
+                if healthy_since is None:
+                    healthy_since = now
+                    if business:
+                        deadline = now + stable_seconds + 40
+                if now - healthy_since >= stable_seconds:
                     return True
             else:
                 healthy_since = None
@@ -234,11 +313,18 @@ class Supervisor:
 
     def check_update(self):
         settings = load_settings(self.data_dir/'collector_settings.json')
-        if not settings.configured or not self.current:
+        if not settings.configured or not self.current or not self.update_state_readable:
+            return
+        scope = self.health().get('update_scope', {})
+        if scope.get('site_id') != settings.site_id or not all(scope.get(k) for k in ('customer_id','site_id','instance_id')):
+            self.report('failed', error='Collector scope unavailable; update postponed')
             return
         origin = secure_origin(settings.cloud_url)
         self.report('checking', last_check_at=time.time(), error=None)
-        req = urllib.request.Request(origin+'/api/v1/collector-updates/stable', headers={'User-Agent':'HawkHive-Collector-Updater/1'})
+        req = urllib.request.Request(origin+'/api/v1/collector-updates/scoped/stable',
+                                     headers={'User-Agent':'HawkHive-Collector-Updater/2',
+                                              'Authorization':'Bearer ' + settings.token,
+                                              'X-DCP-Collector-Instance':scope['instance_id']})
         with update_opener().open(req,timeout=15) as response:
             if response.geturl() != req.full_url:
                 raise ValueError('Unexpected update manifest URL')
@@ -250,11 +336,12 @@ class Supervisor:
             self.report('idle', available_version=None)
             return
         release = verify_manifest(envelope)
+        verify_scope(release, scope)
         self.report('available', available_version=release['version'])
         if version_tuple(release['version']) <= version_tuple(self.current):
             self.report('up_to_date')
             return
-        if release['version'] == self.blocked_version:
+        if release['version'] == self.blocked_version or release['sha256'] == self.blocked_sha256:
             self.report('rolled_back', error='This release previously failed its startup check; waiting for a newer release')
             return
         self.report('downloading')
@@ -268,22 +355,38 @@ class Supervisor:
             switched = True
             self.report('installing')
             self.start_worker()
-            if not self.healthy_trial(release['version']):
+            if not self.healthy_trial(release['version'], business=True, scope=scope):
                 raise RuntimeError('Updated collector did not pass its startup health check')
             self.transaction.commit(release['version'])
-            self.current = release['version']
-            self.report('updated',last_success_at=time.time(),error=None,blocked_version=None)
-            self.blocked_version = None
         except Exception:
             if switched:
-                self.stop_worker(force=True)
-            self.transaction.recover()
+                if not self.stop_worker(force=True):
+                    raise RuntimeError('Cannot confirm new collector stopped; rollback remains pending')
             self.blocked_version = release['version']
-            self.report('rolled_back',blocked_version=self.blocked_version,error='New version failed; previous collector restored')
+            self.blocked_sha256 = release['sha256']
+            # Persist the block before clearing the transaction: a power loss
+            # must not make the failed release eligible again.
+            self.report('rollback_pending',blocked_version=self.blocked_version,blocked_sha256=self.blocked_sha256,error='New version failed; restoring previous collector')
+            self.transaction.recover()
+            self.report('rolled_back',error='Previous collector restored')
             self.start_worker()
             raise
+        # The transaction is already committed. A status write failure must not
+        # stop the healthy worker or pretend an absent journal restored old code.
+        self.current = release['version']
+        self.blocked_version = None
+        self.blocked_sha256 = None
+        try:
+            self.report('updated',last_success_at=time.time(),error=None,blocked_version=None,blocked_sha256=None)
+        except OSError:
+            self.update_state_readable = False
 
     def run(self):
+        if self.transaction.journal.exists():
+            pending = read_json(self.transaction.journal)
+            self.blocked_version = pending.get('target') or self.blocked_version
+            self.blocked_sha256 = pending.get('target_sha256') or self.blocked_sha256
+            self.report('rollback_pending', blocked_version=self.blocked_version,blocked_sha256=self.blocked_sha256)
         recovered = self.transaction.recover()
         if recovered:
             self.current = recovered.get('previous_version')
@@ -310,6 +413,10 @@ class Supervisor:
                 try:
                     self.check_update()
                 except Exception as exc:
+                    if self.transaction.journal.exists():
+                        # Never let the generic restart loop launch a failed target
+                        # when stopping/restoring it failed. Boot recovery owns it.
+                        raise
                     if self.status.get('state') != 'rolled_back':
                         # Do not surface URLs/tokens or change collection behavior.
                         self.report('failed',error=f'Automatic update check failed ({type(exc).__name__}); will retry')

@@ -86,6 +86,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    values = sys.argv[1:] if argv is None else argv
+    if values and values[0] == '--passive-cache-helper':
+        from passive_incident import helper_main
+        return helper_main(values[1:])
     args = parse_args(argv)
     if not 1 <= args.port <= 65535:
         raise SystemExit("Port must be between 1 and 65535")

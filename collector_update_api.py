@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import re
 from pathlib import Path
-from fastapi import HTTPException
+from fastapi import HTTPException, Depends
 from fastapi.responses import FileResponse, JSONResponse
-from update_protocol import read_json, verify_manifest, verify_executable
+from update_protocol import read_json, verify_manifest, verify_executable, verify_scope
 
 
 def release_directory():
@@ -19,6 +21,8 @@ def current_release():
         return None
     envelope = read_json(root/'stable.json')
     payload = verify_manifest(envelope)
+    if payload.get('protocol') != 1 or 'scope' in payload:
+        raise ValueError('Scoped releases cannot be published on the legacy global channel')
     verify_executable(root/(payload['sha256']+'.exe'), payload)
     return envelope
 
@@ -31,7 +35,28 @@ def release_summary():
         return None  # An invalid release must never be advertised as installable.
 
 
-def register_update_routes(app):
+def scope_filename(scope):
+    # No tenant-controlled path components or wildcard release fallback.
+    return hashlib.sha256(json.dumps({k:scope[k] for k in ('customer_id','site_id','instance_id')},
+                                     sort_keys=True, separators=(',', ':')).encode()).hexdigest() + '.json'
+
+
+def register_update_routes(app, update_identity=None):
+    if update_identity is not None:
+        @app.get('/api/v1/collector-updates/scoped/stable')
+        def scoped_stable(identity=Depends(update_identity)):
+            path = release_directory() / 'scoped' / scope_filename(identity)
+            if not path.is_file():
+                return JSONResponse({'available':False}, headers={'Cache-Control':'no-store'})
+            try:
+                envelope = read_json(path)
+                release = verify_manifest(envelope)
+                verify_scope(release, identity)
+                verify_executable(release_directory()/(release['sha256']+'.exe'), release)
+            except Exception:
+                raise HTTPException(503, 'Scoped collector update is not ready')
+            return JSONResponse(envelope, headers={'Cache-Control':'no-store'})
+
     @app.get('/api/v1/collector-updates/stable')
     def stable():
         try:

@@ -3393,7 +3393,25 @@ register_device_lifecycle(sys.modules[__name__])
 from data_management import register_data_management
 register_data_management(sys.modules[__name__])
 
-register_update_routes(app)
+def update_identity(authorization: str | None = Header(default=None),
+                    x_dcp_collector_instance: str | None = Header(default=None, alias='X-DCP-Collector-Instance')):
+    # Update checks must not acquire/renew a collection lease or modify any data.
+    if not authorization or not authorization.startswith('Bearer ') or not x_dcp_collector_instance:
+        raise HTTPException(401, 'Collector credentials required')
+    if not COLLECTOR_INSTANCE_PATTERN.fullmatch(x_dcp_collector_instance):
+        raise HTTPException(400, 'Invalid collector instance id')
+    digest = hashlib.sha256(authorization[7:].strip().encode()).hexdigest()
+    with connect() as db:
+        row = db.execute('''SELECT t.customer_id,t.site_id FROM edge_tokens t
+            JOIN sites s ON s.id=t.site_id AND s.customer_id=t.customer_id
+            WHERE t.token_hash=%s AND t.enabled=true AND s.retired_at IS NULL
+              AND s.active_collector_instance=%s''', (digest,x_dcp_collector_instance)).fetchone()
+    if row is None:
+        raise HTTPException(403, 'Collector is not the active instance')
+    return dict(customer_id=str(row[0]), site_id=str(row[1]), instance_id=x_dcp_collector_instance)
+
+
+register_update_routes(app, update_identity)
 PUBLIC_DIR = Path(__file__).with_name("public")
 if PUBLIC_DIR.exists():
     app.mount("/", StaticFiles(directory=PUBLIC_DIR, html=True), name="customer-dashboard")

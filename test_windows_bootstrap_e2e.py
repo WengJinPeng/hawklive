@@ -128,7 +128,7 @@ class WindowsBootstrapTests(unittest.TestCase):
             if predicate():return
             time.sleep(2)
         status=read_json(self.root/b.STATE)
-        raise AssertionError('Timed out; bootstrap='+str(status.get('phase'))+' update='+str(read_json(self.data/'collector-update-status.json')))
+        raise AssertionError('Timed out; bootstrap='+str(status.get('phase'))+' error='+str(read_json(self.root/'bootstrap-last-error.json'))+' update='+str(read_json(self.data/'collector-update-status.json')))
     def preserved(self):
         self.assertEqual((self.data/'collector_settings.json').read_bytes(),self.settings)
         with closing(sqlite3.connect(self.data/'collector.sqlite3')) as db:

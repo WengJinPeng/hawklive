@@ -35,6 +35,8 @@ def verify_plan(envelope, *, scope=None, keys=None, fresh=True):
     p = envelope['plan']
     Ed25519PublicKey.from_public_bytes(bytes.fromhex((TRUSTED_KEYS if keys is None else keys)[envelope['key_id']])).verify(
         base64.b64decode(envelope['signature'], validate=True), canonical(p))
+    if set(p) != {'purpose','id','scope','issued_at','expires_at','previous_sha256','target_sha256','worker_sha256','trial_seconds'}:
+        raise ValueError('Unexpected migration fields')
     if p.get('purpose') != 'supervisor-bootstrap-v1':
         raise ValueError('Wrong bootstrap purpose')
     if not re.fullmatch(r'[a-f0-9]{32}', p.get('id', '')):
@@ -96,6 +98,8 @@ class Migration:
             if p['target_sha256'] != p['worker_sha256']:
                 raise ValueError('Candidate must be the committed bridge')
             backup = self.root/'bootstrap-previous.exe'
+            if backup.exists() or (self.root/HELPER).exists():
+                raise ValueError('Unowned bootstrap files already exist')
             durable_copy(self.root/SUPERVISOR, backup, p['previous_sha256'])
             durable_copy(self.root/WORKER, self.root/HELPER, p['target_sha256'])
             record = {'envelope':envelope, 'phase':'prepared', 'version':installed['version']}
@@ -127,6 +131,8 @@ class Migration:
                 if digest(self.root/WORKER) != p['worker_sha256']:
                     raise ValueError('Bridge changed since preparation')
                 self.backend.verify_recovery(self.root/HELPER)
+                for name,key in ((SUPERVISOR,'previous_sha256'),('bootstrap-previous.exe','previous_sha256'),(HELPER,'target_sha256')):
+                    if digest(self.root/name) != p[key]:raise ValueError('Bootstrap material changed')
                 self.save(r, 'stopping')
                 try:
                     self.backend.stop_and_wait()
@@ -165,8 +171,8 @@ class WindowsBackend:
         self.root, self.data = Path(root), Path(data)
 
     def command(self, args):
-        from windows_install import run_checked
-        run_checked(args)
+        import subprocess
+        subprocess.run(args,check=True,capture_output=True,encoding='oem',errors='replace',timeout=20)
 
     def xml(self, name):
         import subprocess
@@ -224,6 +230,7 @@ class WindowsBackend:
         # Task Scheduler, not the worker's process tree, launches the helper.
         start=(datetime.now()+timedelta(minutes=1)).replace(microsecond=0).isoformat()
         xml=xml.replace('</Triggers>',f'<TimeTrigger><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>{start}</StartBoundary><Enabled>true</Enabled></TimeTrigger></Triggers>')
+        xml=xml.replace('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>','<ExecutionTimeLimit>PT20M</ExecutionTimeLimit>')
         import re
         xml=re.sub(r'<Arguments>.*?</Arguments>','<Arguments>--bootstrap-run</Arguments>',xml,flags=re.S)
         path=self.root/'bootstrap-task.xml'
@@ -249,8 +256,8 @@ class WindowsBackend:
         from windows_install import TASK_NAME
         from single_instance import MachineInstanceLock, AlreadyRunningError
         self.command(['schtasks.exe','/Change','/TN',TASK_NAME,'/Disable'])
-        from windows_install import run_checked
-        run_checked(['schtasks.exe','/End','/TN',TASK_NAME],allow_failure=True)
+        import subprocess
+        subprocess.run(['schtasks.exe','/End','/TN',TASK_NAME],capture_output=True,timeout=20)
         deadline=time.monotonic()+90
         while time.monotonic()<deadline:
             machine=MachineInstanceLock()
@@ -310,8 +317,12 @@ def run_installed():
     job = _contain_windows_children()
     _watch_windows_bootstrap_parent()
     backend=WindowsBackend(root,data)
-    backend.preflight()
-    return Migration(root,data,backend).run()
+    try:
+        backend.preflight()
+        return Migration(root,data,backend).run()
+    except Exception as error:
+        atomic_json(root/'bootstrap-last-error.json', {'type':type(error).__name__, 'message':str(error)[:500], 'at':time.time()})
+        raise
 
 
 def poll_authorization(service):

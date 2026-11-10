@@ -59,6 +59,8 @@ class BootstrapTests(unittest.TestCase):
         for phase in ('stopping','stopped','switching','trial','rolling_back'):
             with self.subTest(phase=phase):
                 if self.m.path.exists():self.m.path.unlink()
+                (self.root/b.HELPER).unlink(missing_ok=True)
+                (self.root/'bootstrap-previous.exe').unlink(missing_ok=True)
                 (self.root/b.SUPERVISOR).write_bytes(b'MZ-old-supervisor')
                 self.m.prepare(self.envelope())
                 original=self.m.save
@@ -100,3 +102,29 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(self.backend.stops,0)
 
 if __name__=='__main__':unittest.main()
+
+class BootstrapRouteTests(unittest.TestCase):
+    setUp = BootstrapTests.setUp
+    envelope = BootstrapTests.envelope
+    def test_authenticated_route_has_no_global_or_other_scope_fallback(self):
+        from fastapi import FastAPI, HTTPException, Header
+        from fastapi.testclient import TestClient
+        import collector_update_api as api
+        app=FastAPI()
+        def identity(authorization: str = Header(default='')):
+            if authorization!='Bearer test':raise HTTPException(401)
+            return self.scope
+        api.register_update_routes(app,identity)
+        folder=self.root/'bootstrap';folder.mkdir()
+        path=folder/api.scope_filename(self.scope)
+        path.write_text(json.dumps(self.envelope()))
+        with patch.object(api,'release_directory',return_value=self.root), patch.object(b,'TRUSTED_KEYS',self.keys):
+            client=TestClient(app)
+            url='/api/v1/collector-updates/bootstrap/plan'
+            self.assertEqual(client.get(url).status_code,401)
+            self.assertEqual(client.get(url,headers={'Authorization':'Bearer test'}).json()['plan']['scope'],self.scope)
+            self.plan['scope']=dict(self.scope,customer_id='other')
+            path.write_text(json.dumps(self.envelope()))
+            self.assertEqual(client.get(url,headers={'Authorization':'Bearer test'}).status_code,503)
+            path.unlink()
+            self.assertEqual(client.get(url,headers={'Authorization':'Bearer test'}).json(),{'available':False})

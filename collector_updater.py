@@ -209,7 +209,7 @@ class Supervisor:
     def start_worker(self):
         self.nonce = secrets.token_hex(24)
         self.stop_path.unlink(missing_ok=True)
-        env = {**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT':'1', 'DCP_SUPERVISOR_NONCE':self.nonce}
+        env = {**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT':'1', 'DCP_SUPERVISOR_NONCE':self.nonce, 'DCP_SUPERVISOR_PROTOCOL':'2'}
         env['DCP_UPDATE_TRIAL'] = '1' if self.transaction.journal.exists() else '0'
         env['DCP_UPDATE_JOURNAL'] = str(self.transaction.journal.resolve())
         from collector_activation import ACTIVATION_FILENAME
@@ -312,6 +312,9 @@ class Supervisor:
         return False
 
     def check_update(self):
+        migration = self.transaction.root/'supervisor-bootstrap.json'
+        if migration.exists() and read_json(migration).get('phase') not in ('committed','rolled_back'):
+            return  # The independent bootstrap task owns this trial.
         settings = load_settings(self.data_dir/'collector_settings.json')
         if not settings.configured or not self.current or not self.update_state_readable:
             return

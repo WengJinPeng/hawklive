@@ -43,6 +43,19 @@ def scope_filename(scope):
 
 def register_update_routes(app, update_identity=None):
     if update_identity is not None:
+        @app.get('/api/v1/collector-updates/bootstrap/plan')
+        def bootstrap_plan(identity=Depends(update_identity)):
+            from supervisor_bootstrap import verify_plan
+            path = release_directory() / 'bootstrap' / scope_filename(identity)
+            if not path.is_file():
+                return JSONResponse({'available':False}, headers={'Cache-Control':'no-store'})
+            try:
+                envelope = read_json(path)
+                verify_plan(envelope, scope=identity)
+            except Exception:
+                raise HTTPException(503, 'Bootstrap plan is not ready')
+            return JSONResponse(envelope, headers={'Cache-Control':'no-store'})
+
         @app.get('/api/v1/collector-updates/scoped/stable')
         def scoped_stable(identity=Depends(update_identity)):
             path = release_directory() / 'scoped' / scope_filename(identity)

@@ -87,6 +87,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     values = sys.argv[1:] if argv is None else argv
+    if values == ['--bootstrap-run']:
+        from supervisor_bootstrap import run_installed
+        run_installed()
+        return 0
     if values and values[0] == '--passive-cache-helper':
         from passive_incident import helper_main
         return helper_main(values[1:])

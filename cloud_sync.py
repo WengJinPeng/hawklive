@@ -1021,6 +1021,10 @@ class CloudSyncService:
         if self._thread:
             self._thread.join(timeout=25)
 
+    def sync_bootstrap_once(self) -> int:
+        from supervisor_bootstrap import poll_authorization
+        return poll_authorization(self)
+
     def sync_maintenance_once(self) -> int:
         from collector_maintenance import CollectorMaintenance
         if not self.customer_id:
@@ -1066,6 +1070,7 @@ class CloudSyncService:
             ("alarms", self.sync_alarms_once, 10.0, True),
             ("diagnostics", self.sync_diagnostics_once, 30.0, True),
             ("maintenance", self.sync_maintenance_once, 30.0, False),
+            ("bootstrap", self.sync_bootstrap_once, 60.0, False),
         ]
         if self.remote_discovery_enabled:
             channels.append(("discovery", self.pull_discovery_job_once, self.discovery_interval, False))

@@ -768,6 +768,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "storage_state": storage.get("state"),
                     "database_integrity": storage.get("integrity"),
                     "health_contract": 1,
+                    "supervisor_protocol": 2 if os.environ.get("DCP_SUPERVISOR_PROTOCOL") == "2" else 1,
                     "scheduler": MONITOR.scheduler_health() if MONITOR else {},
                     "update_scope": {'customer_id': CLOUD_SYNC.customer_id,
                                      'site_id': CLOUD_SYNC.site_id,

@@ -71,7 +71,8 @@ class BootstrapTests(unittest.TestCase):
                 with patch.object(self.m,'save',side_effect=crash):
                     with self.assertRaises(Crash):self.m.run()
                 # Expiry must never stop recovery of an already armed transaction.
-                self.assertEqual(self.m.run(),'rolled_back')
+                with patch('supervisor_bootstrap.time.time',return_value=self.plan['expires_at']+1):
+                    self.assertEqual(self.m.run(),'rolled_back')
                 self.assertEqual(b.digest(self.root/b.SUPERVISOR),self.plan['previous_sha256']);self.assert_data()
     def test_wrong_customer_instance_and_bad_signature_make_no_changes(self):
         for field in self.scope:
@@ -82,6 +83,27 @@ class BootstrapTests(unittest.TestCase):
         bad=self.envelope();bad['plan']=dict(self.plan,trial_seconds=1)
         with self.assertRaises(Exception):self.m.prepare(bad)
         self.assertFalse(self.m.path.exists())
+    def test_slow_restored_supervisor_is_not_repeatedly_stopped(self):
+        self.m.prepare(self.envelope())
+        r=b.read_json(self.m.path);self.m.save(r,'rolling_back')
+        (self.root/'bootstrap-previous.exe').write_bytes(b'damaged-but-not-needed')
+        with patch.object(self.backend,'recovered',side_effect=[False,False,True]):
+            for _ in range(2):
+                with self.assertRaises(RuntimeError):self.m.run()
+            self.assertEqual(self.m.run(),'rolled_back')
+        self.assertEqual(self.backend.stops,0)
+        self.assert_data()
+
+    def test_delayed_plan_accepts_committed_idle_receipt(self):
+        for state in ('up_to_date','idle'):
+            with self.subTest(state=state):
+                atomic_json(self.data/'collector-update-status.json', {'state':state,'current_version':'0.6.15'})
+                self.m.prepare(self.envelope())
+                self.assertTrue(self.backend.registered)
+                self.m.path.unlink()
+                (self.root/b.HELPER).unlink()
+                (self.root/'bootstrap-previous.exe').unlink()
+
     def test_legacy_pending_transaction_prevents_preparation(self):
         atomic_json(self.root/'collector-update-transaction.json',{'target':'0.6.15'})
         with self.assertRaises(ValueError):self.m.prepare(self.envelope())
@@ -113,16 +135,17 @@ class BootstrapTests(unittest.TestCase):
     def test_damaged_backup_does_not_stop_running_process(self):
         self.m.prepare(self.envelope());r=b.read_json(self.m.path);self.m.save(r,'trial')
         (self.root/'bootstrap-previous.exe').write_bytes(b'bad')
+        (self.root/b.SUPERVISOR).write_bytes((self.root/b.HELPER).read_bytes())
         with self.assertRaises(ValueError):self.m.run()
         self.assertEqual(self.backend.stops,0)
     def test_recovery_registration_failure_leaves_main_untouched(self):
         with patch.object(self.backend,'register_recovery',side_effect=OSError):
             with self.assertRaises(OSError):self.m.prepare(self.envelope())
-        self.assertEqual(self.m.run(),'prepared');self.assertEqual(self.backend.stops,0)
+        self.assertEqual(self.m.run(),'abandoned');self.assertEqual(self.backend.stops,0)
     def test_expired_armed_plan_does_not_stop_main(self):
         self.m.prepare(self.envelope())
         with patch('supervisor_bootstrap.time.time',return_value=self.plan['expires_at']+1):
-            with self.assertRaises(ValueError):self.m.run()
+            self.assertEqual(self.m.run(),'abandoned')
         self.assertEqual(self.backend.stops,0)
 
 if __name__=='__main__':unittest.main()

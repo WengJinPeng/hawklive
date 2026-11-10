@@ -20,7 +20,7 @@ SUPERVISOR = 'HawkHive-Collector-Supervisor.exe'
 WORKER = 'HawkHive-DPC8001-Collector.exe'
 HELPER = 'HawkHive-Bootstrap.exe'
 STATE = 'supervisor-bootstrap.json'
-TERMINAL = {'committed', 'rolled_back'}
+TERMINAL = {'committed', 'rolled_back', 'abandoned'}
 
 
 def digest(path):
@@ -89,7 +89,7 @@ class Migration:
                 raise ValueError('Legacy worker transaction has not committed')
             installed = read_json(self.root/'collector-installed.json')
             status = read_json(self.data/'collector-update-status.json')
-            if not installed.get('version') or status.get('state') != 'updated' or status.get('current_version') != installed['version']:
+            if not installed.get('version') or status.get('state') not in {'updated','up_to_date','idle'} or status.get('current_version') != installed['version']:
                 raise ValueError('Legacy commit receipt unavailable')
             for name, key in ((SUPERVISOR,'previous_sha256'), (WORKER,'worker_sha256')):
                 if digest(self.root/name) != p[key]:
@@ -120,11 +120,15 @@ class Migration:
             if phase in TERMINAL:
                 return phase
             if phase == 'prepared':
-                return 'prepared'  # registration interrupted; main collector untouched
+                self.save(r, 'abandoned')  # lock proves preparation is no longer active
+                return 'abandoned'  # main collector untouched; retire minute task
             if phase not in {'armed','stopping','stopped','switching','trial','rolling_back'}:
                 raise ValueError('Unknown migration state')
             # Never start a fresh migration after an expired authorization.
             if phase == 'armed':
+                if not p['issued_at'] <= time.time() < p['expires_at']:
+                    self.save(r, 'abandoned')
+                    return 'abandoned'
                 verify_plan(r['envelope'], scope=self.backend.scope(), keys=self.keys)
                 if (self.root/'collector-update-transaction.json').exists():
                     raise ValueError('Legacy transaction reappeared')
@@ -156,6 +160,15 @@ class Migration:
             return self.rollback(r,p)
 
     def rollback(self, r, p):
+        # A prior attempt may already have restored the old supervisor. Never
+        # interrupt its slow startup, or require a backup we no longer need.
+        if digest(self.root/SUPERVISOR) == p['previous_sha256']:
+            self.save(r, 'rolling_back')
+            self.backend.start()
+            if not self.backend.recovered(r['version']):
+                raise RuntimeError('Restored supervisor still starting; retry without stopping it')
+            self.save(r, 'rolled_back')
+            return 'rolled_back'
         # Verify recovery material BEFORE stopping anything. Never guess a backup.
         if digest(self.root/'bootstrap-previous.exe') != p['previous_sha256']:
             raise ValueError('Recovery backup damaged')
@@ -357,6 +370,16 @@ def poll_authorization(service):
             or Path(service.db_path).parent.resolve() != data.resolve()
             or not service.customer_id or (root/STATE).exists()):
         return 0
+    # Report hashes through the existing tenant-bound diagnostic queue before
+    # requesting a plan: the field supervisor can predate the current worker.
+    if not getattr(service, '_bootstrap_inventory_reported', False):
+        inventory = {
+            'supervisor_sha256': digest(root/SUPERVISOR),
+            'worker_sha256': digest(root/WORKER),
+            'installed_version': read_json(root/'collector-installed.json').get('version'),
+        }
+        service.add_log('INFO', 'supervisor_bootstrap_inventory', json.dumps(inventory))
+        service._bootstrap_inventory_reported = True
     # Only the bridge's already authenticated customer/site/instance is eligible.
     scope=dict(customer_id=service.customer_id,site_id=service.site_id,instance_id=service.instance_id)
     settings=load_settings(data/'collector_settings.json')
@@ -367,7 +390,7 @@ def poll_authorization(service):
             if response.geturl()!=req.full_url:raise ValueError('Bootstrap redirect refused')
             raw=response.read(65537)
     except urllib.error.HTTPError as error:
-        if error.code==404:return 0
+        if error.code in (401,403,404):return 0
         raise
     if len(raw)>65536:raise ValueError('Oversized migration plan')
     envelope=json.loads(raw)

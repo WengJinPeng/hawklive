@@ -313,7 +313,7 @@ class Supervisor:
 
     def check_update(self):
         migration = self.transaction.root/'supervisor-bootstrap.json'
-        if migration.exists() and read_json(migration).get('phase') not in ('committed','rolled_back'):
+        if migration.exists() and read_json(migration).get('phase') not in ('committed','rolled_back','abandoned'):
             return  # The independent bootstrap task owns this trial.
         settings = load_settings(self.data_dir/'collector_settings.json')
         if not settings.configured or not self.current or not self.update_state_readable:

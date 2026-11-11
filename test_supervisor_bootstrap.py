@@ -46,6 +46,30 @@ class BootstrapTests(unittest.TestCase):
     def assert_data(self):
         self.assertEqual((self.data/'collector.sqlite3').read_bytes(),b'unchanged database and WAL sentinel')
         self.assertEqual((self.data/'collector.sqlite3-wal').read_bytes(),b'new samples')
+    def test_receipt_tracks_commit_and_rollback_without_repeating_or_writing(self):
+        from types import SimpleNamespace
+        logs=[]
+        service=SimpleNamespace(add_log=lambda *args: logs.append(args))
+        self.m.prepare(self.envelope())
+        b.report_migration_state(service,self.root)
+        b.report_migration_state(service,self.root)
+        self.assertEqual(len(logs),1)
+        self.m.run()
+        before={p.name:p.read_bytes() for p in self.root.iterdir() if p.is_file()}
+        b.report_migration_state(service,self.root)
+        receipt=json.loads(logs[-1][2])
+        self.assertEqual(receipt['phase'],'committed')
+        self.assertEqual(receipt['supervisor_sha256'],self.plan['target_sha256'])
+        self.assertNotIn('signature',receipt)
+        self.assertEqual(before,{p.name:p.read_bytes() for p in self.root.iterdir() if p.is_file()})
+        record=json.loads((self.root/b.STATE).read_text())
+        self.m.rollback(record,self.plan)
+        b.report_migration_state(service,self.root)
+        receipt=json.loads(logs[-1][2])
+        self.assertEqual(receipt['phase'],'rolled_back')
+        self.assertEqual(receipt['supervisor_sha256'],self.plan['previous_sha256'])
+        self.assert_data()
+
     def test_commit_preserves_worker_database_and_blocks_repeat(self):
         self.m.prepare(self.envelope());self.assertEqual(self.backend.stops,0)
         self.assertEqual(self.m.run(),'committed');self.assertEqual(b.digest(self.root/b.SUPERVISOR),self.plan['target_sha256'])

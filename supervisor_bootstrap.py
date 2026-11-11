@@ -376,6 +376,22 @@ def run_installed():
         raise
 
 
+def report_migration_state(service, root):
+    """Expose the durable outcome through the existing authenticated log queue."""
+    record = read_json(root/STATE)
+    phase = record.get('phase')
+    if phase not in TERMINAL | {'prepared','armed','stopping','stopped','switching','trial','rolling_back'}:
+        raise ValueError('Unknown migration state')
+    plan_id = record['envelope']['plan']['id']
+    marker = (plan_id, phase)
+    if getattr(service, '_bootstrap_state_reported', None) == marker:
+        return
+    receipt = dict(plan_id=plan_id, phase=phase, version=record.get('version'),
+                   supervisor_sha256=digest(root/SUPERVISOR), worker_sha256=digest(root/WORKER))
+    service.add_log('INFO', 'supervisor_bootstrap_state', json.dumps(receipt))
+    service._bootstrap_state_reported = marker
+
+
 def poll_authorization(service):
     """Authenticated fixed-purpose request; no plan means no local mutation."""
     import sys
@@ -388,7 +404,10 @@ def poll_authorization(service):
     if (os.name != 'nt' or not getattr(sys,'frozen',False)
             or Path(sys.executable).resolve() != (root/WORKER).resolve()
             or Path(service.db_path).parent.resolve() != data.resolve()
-            or not service.customer_id or (root/STATE).exists()):
+            or not service.customer_id):
+        return 0
+    if (root/STATE).exists():
+        report_migration_state(service, root)
         return 0
     # Report hashes through the existing tenant-bound diagnostic queue before
     # requesting a plan: the field supervisor can predate the current worker.

@@ -22,7 +22,7 @@ from device_identity import IdentityVerifier
 from device_discovery import scan_modbus_networks
 from collector_diagnostics import init_queue, enqueue, prune_queue, redact, diagnostic_scope
 
-COLLECTOR_VERSION = "0.6.14"
+COLLECTOR_VERSION = "0.6.15"
 
 
 def canonical_uuid(value: object) -> str:

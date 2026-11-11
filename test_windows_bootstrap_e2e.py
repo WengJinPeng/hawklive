@@ -48,8 +48,7 @@ class WindowsBootstrapTests(unittest.TestCase):
             lines=original.splitlines(keepends=True)
             p.write_text(''.join(lines[:node.lineno-1])+f'TRUSTED_KEYS: dict[str,str] = {{"hawkhive-2026":{public!r}}}\n'+''.join(lines[node.end_lineno:]),encoding='utf-8')
             if name=='bridge':
-                p=target/'cloud_sync.py';s=p.read_text(encoding='utf-8');assert 'COLLECTOR_VERSION = "0.6.14"' in s
-                p.write_text(s.replace('COLLECTOR_VERSION = "0.6.14"','COLLECTOR_VERSION = "0.6.15"',1),encoding='utf-8')
+                p=target/'cloud_sync.py';s=p.read_text(encoding='utf-8');assert 'COLLECTOR_VERSION = "0.6.15"' in s
             result=subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onefile','--name',name,
                 '--collect-data','certifi','--add-data',str(target/'public')+';public','--distpath',str(cls.folder/'bin'),
                 '--workpath',str(cls.folder/('build-'+name)),'--specpath',str(cls.folder/('spec-'+name)),str(target/'windows_launcher.py')],
